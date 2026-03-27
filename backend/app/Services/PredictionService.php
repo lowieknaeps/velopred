@@ -1,0 +1,1667 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Prediction;
+use App\Models\Race;
+use App\Models\Rider;
+use App\Models\RaceResult;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Berekent features voor elke renner in de startlijst van een race
+ * en stuurt die naar de Python AI-service voor een voorspelling.
+ * Slaat de resultaten op in de predictions tabel.
+ */
+class PredictionService
+{
+    const CURRENT_YEAR_BOOST = 3.0;  // huidig jaar: 3x gewicht
+    const DECAY              = 0.45; // voor jaren daarvoor
+    const MIN_YEAR           = 2019;
+    const MIN_PRIOR          = 3;
+    private array $pcsSeasonSignalsCache = [];
+    private array $topCompetitorCache = [];
+
+    public function __construct(
+        private ExternalCyclingApiService $api,
+        private RiderSyncService $riderSync,
+        private PredictionCalibrationService $calibration,
+    ) {}
+
+    /**
+     * Genereert voorspellingen voor een race en slaat ze op.
+     * Verwerkt renners in batches van 50 om geheugengebruik te beperken.
+     */
+    public function predictRace(Race $race): int
+    {
+        Log::info("[Prediction] Start: {$race->name} {$race->year}");
+
+        $riderIds = $this->getPredictionRiderIds($race);
+
+        if ($riderIds->isEmpty()) {
+            Log::warning("[Prediction] Geen renners gevonden voor {$race->name}");
+            return 0;
+        }
+
+        $contexts = $this->buildPredictionContexts($race);
+        $saved = 0;
+
+        foreach ($contexts as $context) {
+            $payload = [];
+            $featuresBySlug = [];
+
+            foreach ($riderIds->chunk(50) as $chunk) {
+                $riders = Rider::whereIn('id', $chunk)->get();
+                foreach ($riders as $rider) {
+                    if (!$this->isEligibleForPredictionContext($rider, $race, $context)) {
+                        continue;
+                    }
+
+                    $features = $this->buildFeatures($rider, $race, $context, $riderIds->count());
+                    $payload[] = $features;
+                    $featuresBySlug[$rider->pcs_slug] = $features;
+                }
+                unset($riders);
+            }
+
+            if (empty($payload)) {
+                continue;
+            }
+
+            $payload = $this->applyFieldRelativeFeatures($payload);
+            $payload = $this->applyCompositeFeatures($payload);
+            $featuresBySlug = collect($payload)
+                ->keyBy('rider_slug')
+                ->all();
+
+            $response = $this->api->predictRace(
+                $race->pcs_slug,
+                $race->year,
+                $context['parcours_type'],
+                $payload,
+                $context['prediction_type'],
+                $context['stage_number'],
+            );
+
+            $predictions = $response['predictions'] ?? [];
+            $modelVersion = $response['model_version'] ?? 'v1';
+            if (empty($predictions)) {
+                Log::warning("[Prediction] Lege response voor {$race->name} {$race->year} {$context['prediction_type']} {$context['stage_number']}; bestaande voorspellingen blijven behouden.");
+                continue;
+            }
+
+            $slugToId = Rider::whereIn('pcs_slug', collect($predictions)->pluck('rider_slug'))
+                ->pluck('id', 'pcs_slug');
+            $savedRiderIds = [];
+
+            DB::transaction(function () use (
+                $predictions,
+                $slugToId,
+                $featuresBySlug,
+                $race,
+                $context,
+                $modelVersion,
+                &$saved,
+                &$savedRiderIds
+            ) {
+                foreach ($predictions as $pred) {
+                    $slug    = $pred['rider_slug'];
+                    $riderId = $slugToId[$slug] ?? null;
+                    if (!$riderId) {
+                        continue;
+                    }
+
+                    $savedRiderIds[] = (int) $riderId;
+
+                    $rawWinProbability = (float) $pred['win_probability'];
+                    $rawTop10Probability = (float) $pred['top10_probability'];
+                    $calibrated = $context['prediction_type'] === 'result' && $race->isOneDay()
+                        ? $this->calibration->calibrateOneDayResultProbabilities(
+                            $race,
+                            (int) $pred['predicted_position'],
+                            $rawWinProbability,
+                            $rawTop10Probability,
+                        )
+                        : [
+                            'win_probability' => $rawWinProbability,
+                            'top10_probability' => $rawTop10Probability,
+                            'calibration' => null,
+                        ];
+
+                    $featureSet = $featuresBySlug[$slug] ?? $pred['features'];
+                    if (is_array($featureSet)) {
+                        $featureSet['raw_win_probability'] = $rawWinProbability;
+                        $featureSet['raw_top10_probability'] = $rawTop10Probability;
+                        if ($calibrated['calibration']) {
+                            $featureSet['probability_calibration'] = $calibrated['calibration'];
+                        }
+                    }
+
+                    Prediction::updateOrCreate(
+                        [
+                            'race_id' => $race->id,
+                            'rider_id' => $riderId,
+                            'prediction_type' => $context['prediction_type'],
+                            'stage_number' => $context['stage_number'],
+                        ],
+                        [
+                            'model_version' => $modelVersion,
+                            'predicted_position' => $pred['predicted_position'],
+                            'top10_probability' => $calibrated['top10_probability'],
+                            'raw_top10_probability' => $rawTop10Probability,
+                            'win_probability' => $calibrated['win_probability'],
+                            'raw_win_probability' => $rawWinProbability,
+                            'confidence_score' => $pred['confidence_score'],
+                            'features' => $featureSet,
+                        ]
+                    );
+                    $saved++;
+                }
+
+                Prediction::where('race_id', $race->id)
+                    ->where('prediction_type', $context['prediction_type'])
+                    ->where('stage_number', $context['stage_number'])
+                    ->when(!empty($savedRiderIds), fn ($query) => $query->whereNotIn('rider_id', array_values(array_unique($savedRiderIds))))
+                    ->delete();
+            });
+
+            Log::info("[Prediction] {$race->name} {$race->year} {$context['prediction_type']} {$context['stage_number']}: " . count($predictions));
+        }
+
+        Log::info("[Prediction] {$saved} voorspellingen opgeslagen voor {$race->name}");
+        return $saved;
+    }
+
+    public function refreshRaceIfStale(Race $race): bool
+    {
+        $latestPrediction = $race->predictions()->latest('updated_at')->first();
+        $latestPredictionAt = $latestPrediction?->updated_at;
+        $latestResultAt = $race->results()->latest('updated_at')->value('updated_at');
+
+        $needsRefresh = $latestPredictionAt === null;
+
+        if (!$needsRefresh && $race->startlist_synced_at !== null && $race->startlist_synced_at->gt($latestPredictionAt)) {
+            $needsRefresh = true;
+        }
+
+        if (!$needsRefresh && $latestResultAt !== null && now()->parse($latestResultAt)->gt($latestPredictionAt)) {
+            $needsRefresh = true;
+        }
+
+        if (
+            !$needsRefresh
+            && $race->hasStarted()
+            && !$race->hasFinished()
+            && $latestPredictionAt !== null
+            && $latestPredictionAt->lt(now()->subMinutes(20))
+        ) {
+            $needsRefresh = true;
+        }
+
+        if (!$needsRefresh) {
+            return false;
+        }
+
+        try {
+            $this->predictRace($race->fresh());
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning("[Prediction] Automatische page refresh mislukt voor {$race->name} {$race->year}: {$e->getMessage()}");
+            return false;
+        }
+    }
+
+    // ── Feature engineering ───────────────────────────────────────────────────
+
+    private function buildFeatures(Rider $rider, Race $race, array $context, int $fieldSize): array
+    {
+        $currentYear = (int) $race->start_date->format('Y');
+        $raceDate    = $race->start_date->toDateString();
+        $predictionType = $context['prediction_type'];
+        $stageNumber = (int) ($context['stage_number'] ?? 0);
+        $contextParcoursType = $context['parcours_type'] ?? $race->parcours_type;
+        $contextStageSubtype = $context['stage_subtype'] ?? $this->defaultStageSubtypeForParcours($contextParcoursType);
+        $relatedStageSubtypes = $this->relatedStageSubtypes($contextStageSubtype);
+        $raceDays = max(1, $race->start_date->diffInDays($race->end_date) + 1);
+        $categoryWeight = $this->categoryWeight($race->category);
+        $predictionTypeCode = $this->predictionTypeCode($predictionType);
+        $stageSubtypeCode = $this->stageSubtypeCode($contextStageSubtype);
+        $pcsTopCompetitor = $this->topCompetitorMetadata($race, $rider->pcs_slug);
+        $pcsSeasonSignals = $this->pcsSeasonSignals($rider, $race, $pcsTopCompetitor);
+        $currentRaceResults = $race->isOneDay()
+            ? collect()
+            : RaceResult::where('race_id', $race->id)
+                ->where('rider_id', $rider->id)
+                ->whereNotNull('position')
+                ->where('status', 'finished')
+                ->get(['result_type', 'stage_number', 'position']);
+        $liveStageResults = $currentRaceResults->where('result_type', 'stage')->values();
+        $liveClassification = $currentRaceResults->first(function ($result) use ($predictionType, $stageNumber) {
+            if ($result->result_type !== $predictionType) {
+                return false;
+            }
+
+            if ($predictionType !== 'stage') {
+                return true;
+            }
+
+            return (int) $result->stage_number === $stageNumber;
+        });
+        $liveStageResultsCount = $liveStageResults->count();
+        $liveStageAveragePosition = $liveStageResultsCount > 0 ? round($liveStageResults->avg('position'), 2) : null;
+        $liveStageBestPosition = $liveStageResultsCount > 0 ? (int) $liveStageResults->min('position') : null;
+        $liveStageTop10Count = $liveStageResults->filter(fn ($result) => (int) $result->position <= 10)->count();
+        $liveClassificationPosition = $liveClassification?->position;
+
+        // Historische resultaten vóór deze race
+        $prior = RaceResult::where('rider_id', $rider->id)
+            ->whereIn('result_type', ['result', 'stage', 'gc', 'points', 'kom', 'youth'])
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->where('position', '<=', 100)
+            ->join('races', 'race_results.race_id', '=', 'races.id')
+            ->where('races.start_date', '<', $raceDate)
+            ->where('races.year', '>=', self::MIN_YEAR)
+            ->select(
+                'race_results.position',
+                'race_results.result_type',
+                'race_results.stage_number',
+                'races.year as race_year',
+                'races.parcours_type',
+                'races.pcs_slug as race_slug',
+                'races.stages_json'
+            )
+            ->get();
+
+        $prior = $prior->map(function ($result) {
+            $result->context_parcours_type = $this->resolveResultParcoursType(
+                $result->result_type,
+                $result->parcours_type,
+                $result->stages_json,
+                (int) ($result->stage_number ?? 0),
+            );
+            $result->context_stage_subtype = $this->resolveResultStageSubtype(
+                $result->result_type,
+                $result->parcours_type,
+                $result->stages_json,
+                (int) ($result->stage_number ?? 0),
+            );
+
+            return $result;
+        });
+
+        $contextPrior = $prior->filter(
+            fn($result) => in_array(
+                $result->result_type,
+                $this->historyResultTypes($predictionType, $contextParcoursType, $contextStageSubtype),
+                true
+            )
+        )->values();
+        if ($contextPrior->count() < self::MIN_PRIOR) {
+            $contextPrior = $prior->filter(fn($result) => in_array($result->result_type, $this->fallbackHistoryResultTypes(), true))->values();
+        }
+
+        if ($contextPrior->isEmpty()) {
+            return [
+                'rider_slug'              => $rider->pcs_slug,
+                'prediction_type'         => $predictionType,
+                'stage_number'            => $stageNumber,
+                'field_size'              => $fieldSize,
+                'race_days'               => $raceDays,
+                'category_weight'         => $categoryWeight,
+                'prediction_type_code'    => $predictionTypeCode,
+                'stage_subtype'           => $contextStageSubtype,
+                'stage_subtype_code'      => $stageSubtypeCode,
+                'field_pct_career_points' => 0.5,
+                'field_pct_pcs_ranking'   => 0.5,
+                'field_pct_uci_ranking'   => 0.5,
+                'field_pct_recent_form'   => 0.5,
+                'field_pct_season_form'   => 0.5,
+                'field_pct_course_fit'    => 0.5,
+                'field_pct_top10_rate'    => 0.5,
+                'favourite_score'         => 50.0,
+                'specialist_score'        => 50.0,
+                'season_dominance_score'  => 50.0,
+                'avg_position'            => null,
+                'avg_position_parcours'   => null,
+                'avg_position_stage_subtype' => null,
+                'recent_avg_position_parcours' => null,
+                'recent_avg_position_stage_subtype' => null,
+                'recent_top10_rate_parcours' => null,
+                'recent_top10_rate_stage_subtype' => null,
+                'top10_rate'              => null,
+                'form_trend'              => null,
+                'age'                     => $rider->age,
+                'career_points'           => $rider->career_points,
+                'pcs_ranking'             => $rider->pcs_ranking,
+                'uci_ranking'             => $rider->uci_ranking,
+                'recent_avg_position'     => null,
+                'recent_top10_rate'       => null,
+                'avg_position_this_race'  => null,
+                'best_result_this_race'   => null,
+                'wins_this_race'          => 0,
+                'podiums_this_race'       => 0,
+                'current_year_avg_position' => null,
+                'current_year_top10_rate' => null,
+                'current_year_avg_position_parcours' => null,
+                'current_year_top10_rate_parcours' => null,
+                'current_year_avg_position_stage_subtype' => null,
+                'current_year_top10_rate_stage_subtype' => null,
+                'sprint_profile_score' => 25.0,
+                'punch_profile_score' => 25.0,
+                'climb_profile_score' => 25.0,
+                'tt_profile_score' => 25.0,
+                'sprint_profile_experience' => 0.0,
+                'punch_profile_experience' => 0.0,
+                'climb_profile_experience' => 0.0,
+                'tt_profile_experience' => 0.0,
+                'pcs_speciality_one_day' => $rider->pcs_speciality_one_day,
+                'pcs_speciality_gc' => $rider->pcs_speciality_gc,
+                'pcs_speciality_tt' => $rider->pcs_speciality_tt,
+                'pcs_speciality_sprint' => $rider->pcs_speciality_sprint,
+                'pcs_speciality_climber' => $rider->pcs_speciality_climber,
+                'pcs_speciality_hills' => $rider->pcs_speciality_hills,
+                'wins_current_year'       => 0,
+                'podiums_current_year'    => 0,
+                'current_year_results_count' => 0,
+                'parcours_results_count'  => 0,
+                'stage_subtype_results_count' => 0,
+                'this_race_results_count' => 0,
+                'race_specificity_ratio'  => 1.0,
+                'pcs_top_competitor_rank' => $pcsTopCompetitor['rank'] ?? null,
+                'pcs_top_competitor_points' => $pcsTopCompetitor['pcs_points'] ?? null,
+                'pcs_top_competitor_pcs_ranking' => $pcsTopCompetitor['pcs_ranking'] ?? null,
+                'pcs_recent_activity_count_30d' => $pcsSeasonSignals['recent_activity_count_30d'],
+                'pcs_season_finished_count' => $pcsSeasonSignals['season_finished_count'],
+                'pcs_season_top10_rate' => $pcsSeasonSignals['season_top10_rate'],
+                'pcs_small_race_wins' => $pcsSeasonSignals['small_race_wins'],
+                'pcs_small_race_top10_rate' => $pcsSeasonSignals['small_race_top10_rate'],
+                'pcs_recent_nonfinish_count_90d' => $pcsSeasonSignals['recent_nonfinish_count_90d'],
+                'pcs_last_incident_days_ago' => $pcsSeasonSignals['last_incident_days_ago'],
+                'pcs_comeback_finished_count' => $pcsSeasonSignals['comeback_finished_count'],
+                'pcs_days_since_last_result' => $pcsSeasonSignals['days_since_last_result'],
+                'live_stage_results_count' => $liveStageResultsCount,
+                'live_stage_avg_position' => $liveStageAveragePosition,
+                'live_stage_best_position' => $liveStageBestPosition,
+                'live_stage_top10_count' => $liveStageTop10Count,
+                'live_classification_position' => $liveClassificationPosition,
+                'n_results'               => 0,
+            ];
+        }
+
+        // Gewichtsberekening: huidig jaar 3×, vorig jaar 1.0, ouder snel dalend
+        $weights = $contextPrior->mapWithKeys(function ($r, $i) use ($currentYear) {
+            $yearsAgo = max(0, $currentYear - $r->race_year);
+            if ($yearsAgo === 0)      $w = self::CURRENT_YEAR_BOOST;
+            elseif ($yearsAgo === 1)  $w = 1.0;
+            else                      $w = pow(self::DECAY, $yearsAgo - 1);
+            return [$i => $w];
+        });
+        $totalWeight = $weights->sum();
+
+        // Gewogen gemiddelde positie
+        $avgPos = $contextPrior->zip($weights)->map(fn($pair) => $pair[0]->position * $pair[1])->sum() / $totalWeight;
+
+        // Gewogen top-10 rate
+        $top10Rate = $contextPrior->zip($weights)->map(fn($pair) => ($pair[0]->position <= 10 ? 1 : 0) * $pair[1])->sum() / $totalWeight * 100;
+
+        // Gewogen gem. op dit parcours type
+        $parcoursGroup = $contextPrior->filter(fn($r) => $r->context_parcours_type === $contextParcoursType);
+        $avgPosParcours = $parcoursGroup->isNotEmpty()
+            ? $parcoursGroup->zip($weights->only($parcoursGroup->keys()))->map(fn($p) => $p[0]->position * $p[1])->sum()
+              / $weights->only($parcoursGroup->keys())->sum()
+            : $avgPos;
+        $stageSubtypeGroup = $contextPrior->filter(
+            fn($r) => in_array(($r->context_stage_subtype ?? null), $relatedStageSubtypes, true)
+        );
+        $avgPosStageSubtype = $stageSubtypeGroup->isNotEmpty()
+            ? $stageSubtypeGroup->zip($weights->only($stageSubtypeGroup->keys()))->map(fn($p) => $p[0]->position * $p[1])->sum()
+              / $weights->only($stageSubtypeGroup->keys())->sum()
+            : $avgPosParcours;
+
+        // Form trend: gem. laatste 5 races vs. alles
+        $recent    = $contextPrior->take(-5);
+        $recentAvg = $recent->isNotEmpty() ? $recent->avg('position') : $avgPos;
+        $formTrend = $recentAvg - $avgPos;
+        $recentTop10Rate = $recent->isNotEmpty()
+            ? $recent->filter(fn($r) => $r->position <= 10)->count() / $recent->count() * 100
+            : $top10Rate;
+        $recentParcours = $parcoursGroup->take(-5);
+        $recentParcoursAvg = $recentParcours->isNotEmpty() ? $recentParcours->avg('position') : $avgPosParcours;
+        $recentParcoursTop10Rate = $recentParcours->isNotEmpty()
+            ? $recentParcours->filter(fn($r) => $r->position <= 10)->count() / $recentParcours->count() * 100
+            : $top10Rate;
+        $recentStageSubtype = $stageSubtypeGroup->take(-5);
+        $recentStageSubtypeAvg = $recentStageSubtype->isNotEmpty() ? $recentStageSubtype->avg('position') : $avgPosStageSubtype;
+        $recentStageSubtypeTop10Rate = $recentStageSubtype->isNotEmpty()
+            ? $recentStageSubtype->filter(fn($r) => $r->position <= 10)->count() / $recentStageSubtype->count() * 100
+            : $recentParcoursTop10Rate;
+
+        // Race-specifieke features: normale decay (zonder current_year_boost)
+        // zodat historische prestaties op déze koers nog meetellen (RVV-effect)
+        $raceWeights = $contextPrior->mapWithKeys(function ($r, $i) use ($currentYear) {
+            return [$i => pow(self::DECAY, max(0, $currentYear - $r->race_year))];
+        });
+        $thisRace = $contextPrior->filter(function ($result) use ($race, $predictionType, $relatedStageSubtypes) {
+            if ($result->race_slug !== $race->pcs_slug || $result->result_type !== $predictionType) {
+                return false;
+            }
+
+            if ($predictionType !== 'stage') {
+                return true;
+            }
+
+            return in_array(($result->context_stage_subtype ?? null), $relatedStageSubtypes, true);
+        });
+        $avgThisRaceRaw = null;
+        if ($thisRace->isNotEmpty()) {
+            $rw = $raceWeights->only($thisRace->keys());
+            $avgThisRaceRaw = $thisRace->zip($rw)->map(fn($p) => $p[0]->position * $p[1])->sum() / $rw->sum();
+        }
+
+        $courseHistoryFallback = match ($predictionType) {
+            'stage' => $avgPosStageSubtype,
+            'gc', 'youth', 'points', 'kom' => $avgPosParcours,
+            default => $avgPos,
+        };
+
+        $avgThisRace = $this->stabilizeCourseHistoryAverage(
+            $avgThisRaceRaw,
+            $courseHistoryFallback,
+            $thisRace->count(),
+            $predictionType,
+        );
+
+        // Race-specifieke features
+        $bestResultThisRace = $thisRace->isNotEmpty() ? (float) $thisRace->min('position') : $courseHistoryFallback;
+        $winsThisRace       = $thisRace->where('position', 1)->count();
+        $podiumsThisRace    = $thisRace->where('position', '<=', 3)->count();
+        $thisRaceResultsCount = $thisRace->count();
+
+        // Huidig seizoen telt apart mee zodat recente topvorm zichtbaar blijft
+        $currentYearResults = $contextPrior->filter(fn($r) => (int) $r->race_year === $currentYear);
+        if ($currentYearResults->isNotEmpty()) {
+            $cyWeights = $weights->only($currentYearResults->keys());
+            $currentYearAvgPosition = $currentYearResults->zip($cyWeights)
+                ->map(fn($p) => $p[0]->position * $p[1])
+                ->sum() / $cyWeights->sum();
+            $currentYearTop10Rate = $currentYearResults->zip($cyWeights)
+                ->map(fn($p) => ($p[0]->position <= 10 ? 1 : 0) * $p[1])
+                ->sum() / $cyWeights->sum() * 100;
+            $winsCurrentYear    = $currentYearResults->where('position', 1)->count();
+            $podiumsCurrentYear = $currentYearResults->where('position', '<=', 3)->count();
+            $currentYearResultsCount = $currentYearResults->count();
+        } else {
+            $currentYearAvgPosition = null;
+            $currentYearTop10Rate   = null;
+            $winsCurrentYear        = 0;
+            $podiumsCurrentYear     = 0;
+            $currentYearResultsCount = 0;
+        }
+
+        $currentYearParcoursResults = $currentYearResults->filter(
+            fn($r) => $r->context_parcours_type === $contextParcoursType
+        );
+        if ($currentYearParcoursResults->isNotEmpty()) {
+            $cyParcoursWeights = $weights->only($currentYearParcoursResults->keys());
+            $currentYearAvgPositionParcours = $currentYearParcoursResults->zip($cyParcoursWeights)
+                ->map(fn($p) => $p[0]->position * $p[1])
+                ->sum() / $cyParcoursWeights->sum();
+            $currentYearTop10RateParcours = $currentYearParcoursResults->zip($cyParcoursWeights)
+                ->map(fn($p) => ($p[0]->position <= 10 ? 1 : 0) * $p[1])
+                ->sum() / $cyParcoursWeights->sum() * 100;
+        } else {
+            $currentYearAvgPositionParcours = null;
+            $currentYearTop10RateParcours = null;
+        }
+        $currentYearStageSubtypeResults = $currentYearResults->filter(
+            fn($r) => in_array(($r->context_stage_subtype ?? null), $relatedStageSubtypes, true)
+        );
+        if ($currentYearStageSubtypeResults->isNotEmpty()) {
+            $cyStageSubtypeWeights = $weights->only($currentYearStageSubtypeResults->keys());
+            $currentYearAvgPositionStageSubtype = $currentYearStageSubtypeResults->zip($cyStageSubtypeWeights)
+                ->map(fn($p) => $p[0]->position * $p[1])
+                ->sum() / $cyStageSubtypeWeights->sum();
+            $currentYearTop10RateStageSubtype = $currentYearStageSubtypeResults->zip($cyStageSubtypeWeights)
+                ->map(fn($p) => ($p[0]->position <= 10 ? 1 : 0) * $p[1])
+                ->sum() / $cyStageSubtypeWeights->sum() * 100;
+        } else {
+            $currentYearAvgPositionStageSubtype = null;
+            $currentYearTop10RateStageSubtype = null;
+        }
+
+        $parcoursResultsCount = $parcoursGroup->count();
+        $stageSubtypeResultsCount = $stageSubtypeGroup->count();
+
+        // Specialisatieratio: hoe véél beter is de renner op déze koers vs. algemeen?
+        // Van der Poel bij RVV: 8.51 / 1.83 = 4.65 (sterke specialist)
+        // Evenepoel bij RVV:    13   / 13   = 1.00 (geen specialisme)
+        $raceSpecificityRatio = $avgThisRace > 0 ? round($avgPos / $avgThisRace, 3) : 1.0;
+
+        // Leeftijd: exacte geboortedatum of schatting
+        $age = null;
+        if ($rider->date_of_birth) {
+            $age = $rider->date_of_birth->diffInYears($race->start_date);
+        } elseif ($rider->age_approx) {
+            $age = $rider->age_approx;
+        }
+
+        $stageProfiles = $this->computeStageProfiles($prior, $currentYear);
+
+        return [
+            'rider_slug'              => $rider->pcs_slug,
+            'prediction_type'         => $predictionType,
+            'stage_number'            => $stageNumber,
+            'field_size'              => $fieldSize,
+            'race_days'               => $raceDays,
+            'category_weight'         => $categoryWeight,
+            'prediction_type_code'    => $predictionTypeCode,
+            'stage_subtype'           => $contextStageSubtype,
+            'stage_subtype_code'      => $stageSubtypeCode,
+            'field_pct_career_points' => 0.5,
+            'field_pct_pcs_ranking'   => 0.5,
+            'field_pct_uci_ranking'   => 0.5,
+            'field_pct_recent_form'   => 0.5,
+            'field_pct_season_form'   => 0.5,
+            'field_pct_course_fit'    => 0.5,
+            'field_pct_top10_rate'    => 0.5,
+            'favourite_score'         => 50.0,
+            'specialist_score'        => 50.0,
+            'season_dominance_score'  => 50.0,
+            'avg_position'            => round($avgPos, 2),
+            'avg_position_parcours'   => round($avgPosParcours, 2),
+            'avg_position_stage_subtype' => round($avgPosStageSubtype, 2),
+            'recent_avg_position_parcours' => round($recentParcoursAvg, 2),
+            'recent_avg_position_stage_subtype' => round($recentStageSubtypeAvg, 2),
+            'recent_top10_rate_parcours' => round($recentParcoursTop10Rate, 2),
+            'recent_top10_rate_stage_subtype' => round($recentStageSubtypeTop10Rate, 2),
+            'top10_rate'              => round($top10Rate, 2),
+            'form_trend'              => round($formTrend, 2),
+            'recent_avg_position'     => round($recentAvg, 2),
+            'recent_top10_rate'       => round($recentTop10Rate, 2),
+            'avg_position_this_race'  => round($avgThisRace, 2),
+            'best_result_this_race'   => $bestResultThisRace,
+            'wins_this_race'          => $winsThisRace,
+            'podiums_this_race'       => $podiumsThisRace,
+            'current_year_avg_position' => $currentYearAvgPosition !== null ? round($currentYearAvgPosition, 2) : null,
+            'current_year_top10_rate' => $currentYearTop10Rate !== null ? round($currentYearTop10Rate, 2) : null,
+            'current_year_avg_position_parcours' => $currentYearAvgPositionParcours !== null ? round($currentYearAvgPositionParcours, 2) : null,
+            'current_year_top10_rate_parcours' => $currentYearTop10RateParcours !== null ? round($currentYearTop10RateParcours, 2) : null,
+            'current_year_avg_position_stage_subtype' => $currentYearAvgPositionStageSubtype !== null ? round($currentYearAvgPositionStageSubtype, 2) : null,
+            'current_year_top10_rate_stage_subtype' => $currentYearTop10RateStageSubtype !== null ? round($currentYearTop10RateStageSubtype, 2) : null,
+            'sprint_profile_score' => $stageProfiles['sprint']['score'],
+            'punch_profile_score' => $stageProfiles['punch']['score'],
+            'climb_profile_score' => $stageProfiles['climb']['score'],
+            'tt_profile_score' => $stageProfiles['tt']['score'],
+            'sprint_profile_experience' => $stageProfiles['sprint']['experience'],
+            'punch_profile_experience' => $stageProfiles['punch']['experience'],
+            'climb_profile_experience' => $stageProfiles['climb']['experience'],
+            'tt_profile_experience' => $stageProfiles['tt']['experience'],
+            'pcs_speciality_one_day' => $rider->pcs_speciality_one_day,
+            'pcs_speciality_gc' => $rider->pcs_speciality_gc,
+            'pcs_speciality_tt' => $rider->pcs_speciality_tt,
+            'pcs_speciality_sprint' => $rider->pcs_speciality_sprint,
+            'pcs_speciality_climber' => $rider->pcs_speciality_climber,
+            'pcs_speciality_hills' => $rider->pcs_speciality_hills,
+            'wins_current_year'       => $winsCurrentYear,
+            'podiums_current_year'    => $podiumsCurrentYear,
+            'current_year_results_count' => $currentYearResultsCount,
+            'parcours_results_count'  => $parcoursResultsCount,
+            'stage_subtype_results_count' => $stageSubtypeResultsCount,
+            'this_race_results_count' => $thisRaceResultsCount,
+            'race_specificity_ratio'  => $raceSpecificityRatio,
+            'pcs_top_competitor_rank' => $pcsTopCompetitor['rank'] ?? null,
+            'pcs_top_competitor_points' => $pcsTopCompetitor['pcs_points'] ?? null,
+            'pcs_top_competitor_pcs_ranking' => $pcsTopCompetitor['pcs_ranking'] ?? null,
+            'pcs_recent_activity_count_30d' => $pcsSeasonSignals['recent_activity_count_30d'],
+            'pcs_season_finished_count' => $pcsSeasonSignals['season_finished_count'],
+            'pcs_season_top10_rate' => $pcsSeasonSignals['season_top10_rate'],
+            'pcs_small_race_wins' => $pcsSeasonSignals['small_race_wins'],
+            'pcs_small_race_top10_rate' => $pcsSeasonSignals['small_race_top10_rate'],
+            'pcs_recent_nonfinish_count_90d' => $pcsSeasonSignals['recent_nonfinish_count_90d'],
+            'pcs_last_incident_days_ago' => $pcsSeasonSignals['last_incident_days_ago'],
+            'pcs_comeback_finished_count' => $pcsSeasonSignals['comeback_finished_count'],
+            'pcs_days_since_last_result' => $pcsSeasonSignals['days_since_last_result'],
+            'live_stage_results_count' => $liveStageResultsCount,
+            'live_stage_avg_position' => $liveStageAveragePosition,
+            'live_stage_best_position' => $liveStageBestPosition,
+            'live_stage_top10_count' => $liveStageTop10Count,
+            'live_classification_position' => $liveClassificationPosition,
+            'career_points'           => $rider->career_points,
+            'pcs_ranking'             => $rider->pcs_ranking,
+            'uci_ranking'             => $rider->uci_ranking,
+            'age'                     => $age,
+            'n_results'               => $contextPrior->count(),
+        ];
+    }
+
+    private function buildPredictionContexts(Race $race): Collection
+    {
+        if ($race->isOneDay()) {
+            return collect([[
+                'prediction_type' => 'result',
+                'stage_number'    => 0,
+                'parcours_type'   => $race->parcours_type,
+            ]]);
+        }
+
+        $contexts = collect($race->stages_json ?? [])
+            ->map(function (array $stage) use ($race) {
+                return [
+                    'prediction_type' => 'stage',
+                    'stage_number'    => (int) ($stage['number'] ?? 0),
+                    'parcours_type'   => $stage['parcours_type'] ?? $race->parcours_type,
+                    'stage_subtype'   => $stage['stage_subtype'] ?? $this->defaultStageSubtypeForParcours($stage['parcours_type'] ?? $race->parcours_type),
+                ];
+            })
+            ->filter(fn(array $context) => $context['stage_number'] > 0)
+            ->values();
+
+        return $contexts
+            ->concat(collect([
+                [
+                    'prediction_type' => 'gc',
+                    'stage_number'    => 0,
+                    'parcours_type'   => $race->parcours_type,
+                ],
+                [
+                    'prediction_type' => 'points',
+                    'stage_number'    => 0,
+                    'parcours_type'   => 'flat',
+                ],
+                [
+                    'prediction_type' => 'kom',
+                    'stage_number'    => 0,
+                    'parcours_type'   => 'mountain',
+                ],
+                [
+                    'prediction_type' => 'youth',
+                    'stage_number'    => 0,
+                    'parcours_type'   => $race->parcours_type,
+                ],
+            ]))
+            ->values();
+    }
+
+    private function isEligibleForPredictionContext(Rider $rider, Race $race, array $context): bool
+    {
+        $predictionType = $context['prediction_type'] ?? 'result';
+
+        if ($predictionType !== 'youth') {
+            return true;
+        }
+
+        $ageAtRaceStart = null;
+
+        if ($rider->date_of_birth) {
+            $ageAtRaceStart = $rider->date_of_birth->diffInYears($race->start_date);
+        } elseif ($rider->age_approx !== null) {
+            $ageAtRaceStart = (int) $rider->age_approx;
+        }
+
+        return $ageAtRaceStart === null || $ageAtRaceStart < 26;
+    }
+
+    private function historyResultTypes(
+        string $predictionType,
+        ?string $contextParcoursType = null,
+        ?string $contextStageSubtype = null
+    ): array
+    {
+        if ($predictionType === 'stage') {
+            $stageTypes = match ($contextStageSubtype) {
+                'sprint' => ['stage', 'result', 'points'],
+                'reduced_sprint' => ['stage', 'result', 'points', 'gc', 'youth'],
+                'summit_finish' => ['stage', 'gc', 'kom', 'youth', 'result'],
+                'high_mountain' => ['stage', 'gc', 'kom', 'youth', 'result'],
+                'tt', 'ttt' => ['stage', 'gc', 'result'],
+                default => null,
+            };
+
+            if ($stageTypes !== null) {
+                return $stageTypes;
+            }
+
+            return match ($contextParcoursType) {
+                'mountain' => ['stage', 'gc', 'kom', 'youth', 'result'],
+                'hilly' => ['stage', 'result', 'gc', 'youth'],
+                'flat' => ['stage', 'result', 'points'],
+                'tt' => ['stage', 'gc', 'result'],
+                default => ['stage', 'result', 'gc'],
+            };
+        }
+
+        return match ($predictionType) {
+            'result' => ['result', 'stage'],
+            'gc'     => ['gc', 'youth', 'stage'],
+            'points' => ['points', 'result', 'stage'],
+            'kom'    => ['kom', 'stage', 'gc'],
+            'youth'  => ['youth', 'gc', 'stage'],
+            default  => ['result', 'stage', 'gc'],
+        };
+    }
+
+    private function fallbackHistoryResultTypes(): array
+    {
+        return ['result', 'stage', 'gc', 'points', 'kom', 'youth'];
+    }
+
+    private function resolveResultParcoursType(string $resultType, ?string $raceParcoursType, mixed $stagesJson, int $stageNumber = 0): string
+    {
+        if ($resultType === 'stage') {
+            foreach ($this->decodeStagesJson($stagesJson) as $stage) {
+                if ((int) ($stage['number'] ?? 0) === $stageNumber) {
+                    return $stage['parcours_type'] ?? ($raceParcoursType ?: 'default');
+                }
+            }
+        }
+
+        return match ($resultType) {
+            'points' => 'flat',
+            'kom'    => 'mountain',
+            default  => $raceParcoursType ?: 'default',
+        };
+    }
+
+    private function resolveResultStageSubtype(string $resultType, ?string $raceParcoursType, mixed $stagesJson, int $stageNumber = 0): string
+    {
+        if ($resultType === 'stage') {
+            foreach ($this->decodeStagesJson($stagesJson) as $stage) {
+                if ((int) ($stage['number'] ?? 0) === $stageNumber) {
+                    return $stage['stage_subtype'] ?? $this->defaultStageSubtypeForParcours($stage['parcours_type'] ?? $raceParcoursType);
+                }
+            }
+        }
+
+        return match ($resultType) {
+            'points' => 'sprint',
+            'kom'    => 'high_mountain',
+            default  => $this->defaultStageSubtypeForParcours($raceParcoursType),
+        };
+    }
+
+    private function decodeStagesJson(mixed $stagesJson): array
+    {
+        if (is_array($stagesJson)) {
+            return $stagesJson;
+        }
+
+        if (!is_string($stagesJson) || trim($stagesJson) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($stagesJson, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function categoryWeight(?string $category): float
+    {
+        $value = strtolower($category ?? '');
+
+        if (str_contains($value, 'grand tour')) {
+            return 1.35;
+        }
+
+        if (str_contains($value, 'uwt') || str_contains($value, 'worldtour')) {
+            return 1.25;
+        }
+
+        if (str_contains($value, '.pro') || str_contains($value, 'proseries')) {
+            return 1.05;
+        }
+
+        if (str_contains($value, 'hc')) {
+            return 0.95;
+        }
+
+        if (preg_match('/^[12]\./', $value) === 1) {
+            return 0.82;
+        }
+
+        return 0.90;
+    }
+
+    private function predictionTypeCode(string $predictionType): float
+    {
+        return match ($predictionType) {
+            'stage'  => 1.0,
+            'gc'     => 2.0,
+            'points' => 3.0,
+            'kom'    => 4.0,
+            'youth'  => 5.0,
+            default  => 0.0,
+        };
+    }
+
+    private function stageSubtypeCode(?string $stageSubtype): float
+    {
+        return match ($stageSubtype) {
+            'sprint'         => 1.0,
+            'reduced_sprint' => 2.0,
+            'summit_finish'  => 3.0,
+            'high_mountain'  => 4.0,
+            'tt'             => 5.0,
+            'ttt'            => 6.0,
+            default          => 0.0,
+        };
+    }
+
+    private function defaultStageSubtypeForParcours(?string $parcoursType): string
+    {
+        return match ($parcoursType) {
+            'flat'     => 'sprint',
+            'hilly'    => 'reduced_sprint',
+            'mountain' => 'summit_finish',
+            'tt'       => 'tt',
+            default    => 'mixed',
+        };
+    }
+
+    private function relatedStageSubtypes(?string $stageSubtype): array
+    {
+        return match ($stageSubtype) {
+            'sprint' => ['sprint', 'reduced_sprint'],
+            'reduced_sprint' => ['reduced_sprint', 'sprint'],
+            'summit_finish' => ['summit_finish', 'high_mountain'],
+            'high_mountain' => ['high_mountain', 'summit_finish'],
+            'tt' => ['tt', 'ttt'],
+            'ttt' => ['ttt', 'tt'],
+            default => [$stageSubtype ?: 'mixed'],
+        };
+    }
+
+    private function computeStageProfiles(Collection $prior, int $currentYear): array
+    {
+        $definitions = [
+            'sprint' => [
+                'subtypes' => ['sprint', 'reduced_sprint'],
+                'parcours' => ['flat'],
+                'result_types' => ['stage', 'points'],
+            ],
+            'punch' => [
+                'subtypes' => ['reduced_sprint', 'summit_finish'],
+                'parcours' => ['hilly'],
+                'result_types' => ['stage'],
+            ],
+            'climb' => [
+                'subtypes' => ['summit_finish', 'high_mountain'],
+                'parcours' => ['mountain'],
+                'result_types' => ['stage'],
+            ],
+            'tt' => [
+                'subtypes' => ['tt', 'ttt'],
+                'parcours' => ['tt'],
+                'result_types' => ['stage'],
+            ],
+        ];
+
+        $profiles = [];
+
+        foreach ($definitions as $name => $definition) {
+            $relevant = $prior->filter(function ($result) use ($definition) {
+                $matchesType = in_array($result->result_type, $definition['result_types'], true);
+                if (!$matchesType) {
+                    return false;
+                }
+
+                if ($result->result_type === 'stage') {
+                    return in_array(($result->context_stage_subtype ?? null), $definition['subtypes'], true);
+                }
+
+                return in_array(($result->context_parcours_type ?? null), $definition['parcours'], true);
+            })->values();
+
+            $profiles[$name] = $this->stageProfileSummary($relevant, $currentYear);
+        }
+
+        return $profiles;
+    }
+
+    private function stageProfileSummary(Collection $results, int $currentYear): array
+    {
+        if ($results->isEmpty()) {
+            return ['score' => 25.0, 'experience' => 0.0];
+        }
+
+        $weights = $results->map(function ($result) use ($currentYear) {
+            $yearsAgo = max(0, $currentYear - (int) $result->race_year);
+
+            return match (true) {
+                $yearsAgo === 0 => self::CURRENT_YEAR_BOOST,
+                $yearsAgo === 1 => 1.0,
+                default => pow(self::DECAY, $yearsAgo - 1),
+            };
+        })->values();
+
+        $weightSum = max(0.0001, $weights->sum());
+        $avgPosition = $results->zip($weights)->map(fn($pair) => $pair[0]->position * $pair[1])->sum() / $weightSum;
+        $recent = $results->take(-5)->values();
+        $recentAvg = $recent->isNotEmpty() ? $recent->avg('position') : $avgPosition;
+        $recentTop10 = $recent->isNotEmpty()
+            ? $recent->filter(fn($result) => $result->position <= 10)->count() / $recent->count() * 100
+            : 0.0;
+
+        $currentYearResults = $results->filter(fn($result) => (int) $result->race_year === $currentYear);
+        if ($currentYearResults->isNotEmpty()) {
+            $currentYearWeights = $weights->only($currentYearResults->keys())->values();
+            $currentYearWeightSum = max(0.0001, $currentYearWeights->sum());
+            $currentYearAvg = $currentYearResults->values()->zip($currentYearWeights)
+                ->map(fn($pair) => $pair[0]->position * $pair[1])
+                ->sum() / $currentYearWeightSum;
+            $currentYearTop10 = $currentYearResults->values()->zip($currentYearWeights)
+                ->map(fn($pair) => ($pair[0]->position <= 10 ? 1 : 0) * $pair[1])
+                ->sum() / $currentYearWeightSum * 100;
+        } else {
+            $currentYearAvg = null;
+            $currentYearTop10 = 0.0;
+        }
+
+        $weightedRate = function (Collection $subset, Collection $subsetWeights, int $limit): float {
+            if ($subset->isEmpty()) {
+                return 0.0;
+            }
+
+            $weightSum = max(0.0001, $subsetWeights->sum());
+
+            return $subset->zip($subsetWeights)
+                ->map(fn($pair) => ($pair[0]->position <= $limit ? 1 : 0) * $pair[1])
+                ->sum() / $weightSum * 100;
+        };
+
+        $podiumRate = $weightedRate($results->values(), $weights, 3);
+        $winRate = $weightedRate($results->values(), $weights, 1);
+        $top5Rate = $weightedRate($results->values(), $weights, 5);
+
+        $recentPodium = $weightedRate($recent->values(), collect(array_fill(0, $recent->count(), 1.0)), 3);
+        $recentWin = $weightedRate($recent->values(), collect(array_fill(0, $recent->count(), 1.0)), 1);
+
+        if ($currentYearResults->isNotEmpty()) {
+            $currentYearValues = $currentYearResults->values();
+            $currentYearPodium = $weightedRate($currentYearValues, $currentYearWeights, 3);
+            $currentYearWin = $weightedRate($currentYearValues, $currentYearWeights, 1);
+        } else {
+            $currentYearPodium = 0.0;
+            $currentYearWin = 0.0;
+        }
+
+        $score =
+            $this->normalizedMetric($avgPosition, 25.0, true) * 18.0 +
+            $this->normalizedMetric($recentAvg, 25.0, true) * 12.0 +
+            $this->normalizedMetric($currentYearAvg, 25.0, true) * 12.0 +
+            min(1.0, max(0.0, $top5Rate / 100.0)) * 14.0 +
+            min(1.0, max(0.0, $podiumRate / 100.0)) * 16.0 +
+            min(1.0, max(0.0, $winRate / 100.0)) * 12.0 +
+            min(1.0, max(0.0, $recentTop10 / 100.0)) * 6.0 +
+            min(1.0, max(0.0, $recentPodium / 100.0)) * 4.0 +
+            min(1.0, max(0.0, $recentWin / 100.0)) * 2.0 +
+            min(1.0, max(0.0, $currentYearTop10 / 100.0)) * 6.0 +
+            min(1.0, max(0.0, $currentYearPodium / 100.0)) * 6.0 +
+            min(1.0, max(0.0, $currentYearWin / 100.0)) * 6.0 +
+            min(1.0, $results->count() / 18.0) * 6.0;
+
+        return [
+            'score' => round(min(100.0, $score), 2),
+            'experience' => round(min(1.0, $results->count() / 18.0), 4),
+        ];
+    }
+
+    private function applyFieldRelativeFeatures(array $payload): array
+    {
+        $configs = [
+            ['source' => 'career_points', 'target' => 'field_pct_career_points', 'inverse' => false],
+            ['source' => 'pcs_ranking', 'target' => 'field_pct_pcs_ranking', 'inverse' => true],
+            ['source' => 'uci_ranking', 'target' => 'field_pct_uci_ranking', 'inverse' => true],
+            ['source' => 'recent_avg_position', 'target' => 'field_pct_recent_form', 'inverse' => true],
+            ['source' => 'current_year_avg_position', 'target' => 'field_pct_season_form', 'inverse' => true],
+            ['source' => 'recent_top10_rate', 'target' => 'field_pct_top10_rate', 'inverse' => false],
+        ];
+
+        foreach ($configs as $config) {
+            $scores = $this->percentileScores(
+                array_map(fn(array $row) => $row[$config['source']] ?? null, $payload),
+                $config['inverse'],
+            );
+
+            foreach ($payload as $index => $row) {
+                $payload[$index][$config['target']] = $scores[$index] ?? 0.5;
+            }
+        }
+
+        $courseFitScores = $this->percentileScores(
+            array_map(fn(array $row) => $this->effectiveCourseFitMetric($row), $payload),
+            true,
+        );
+
+        foreach ($payload as $index => $row) {
+            $payload[$index]['field_pct_course_fit'] = $courseFitScores[$index] ?? 0.5;
+        }
+
+        return $payload;
+    }
+
+    private function applyCompositeFeatures(array $payload): array
+    {
+        foreach ($payload as $index => $row) {
+            $predictionType = $row['prediction_type'] ?? 'result';
+            $careerPct = (float) ($row['field_pct_career_points'] ?? 0.5);
+            $pcsPct = (float) ($row['field_pct_pcs_ranking'] ?? 0.5);
+            $uciPct = (float) ($row['field_pct_uci_ranking'] ?? 0.5);
+            $recentPct = (float) ($row['field_pct_recent_form'] ?? 0.5);
+            $seasonPct = (float) ($row['field_pct_season_form'] ?? 0.5);
+            $coursePct = (float) ($row['field_pct_course_fit'] ?? 0.5);
+            $top10Pct = (float) ($row['field_pct_top10_rate'] ?? 0.5);
+            $recentParcoursAvg = $this->normalizedMetric($row['recent_avg_position_parcours'] ?? null, 25.0, true);
+            $recentParcoursTop10 = min(1.0, max(0.0, (float) ($row['recent_top10_rate_parcours'] ?? 0) / 100.0));
+            $currentYearParcoursAvg = $this->normalizedMetric($row['current_year_avg_position_parcours'] ?? null, 25.0, true);
+            $currentYearParcoursTop10 = min(1.0, max(0.0, (float) ($row['current_year_top10_rate_parcours'] ?? 0) / 100.0));
+            $stageSubtypeAvg = $this->normalizedMetric($row['avg_position_stage_subtype'] ?? null, 25.0, true);
+            $recentStageSubtypeAvg = $this->normalizedMetric($row['recent_avg_position_stage_subtype'] ?? null, 25.0, true);
+            $currentYearStageSubtypeAvg = $this->normalizedMetric($row['current_year_avg_position_stage_subtype'] ?? null, 25.0, true);
+            $recentStageSubtypeTop10 = min(1.0, max(0.0, (float) ($row['recent_top10_rate_stage_subtype'] ?? 0) / 100.0));
+            $currentYearStageSubtypeTop10 = min(1.0, max(0.0, (float) ($row['current_year_top10_rate_stage_subtype'] ?? 0) / 100.0));
+            $stageSubtypeExperience = min(1.0, (float) ($row['stage_subtype_results_count'] ?? 0) / 10.0);
+            $stageProfileFit = $this->stageProfileFitScore($row);
+            $stageProfileExperience = $this->stageProfileFitExperience($row);
+            $winsThisRace = (float) ($row['wins_this_race'] ?? 0);
+            $podiumsThisRace = (float) ($row['podiums_this_race'] ?? 0);
+            $winsCurrentYear = (float) ($row['wins_current_year'] ?? 0);
+            $podiumsCurrentYear = (float) ($row['podiums_current_year'] ?? 0);
+            $currentYearAvg = $this->normalizedMetric($row['current_year_avg_position'] ?? null, 25.0, true);
+            $recentAvg = $this->normalizedMetric($row['recent_avg_position'] ?? null, 25.0, true);
+            $parcoursAvg = $this->normalizedMetric($row['avg_position_parcours'] ?? null, 25.0, true);
+            $raceSpecificity = min(1.0, max(0.0, ((float) ($row['race_specificity_ratio'] ?? 1.0) - 1.0) / 3.0));
+            $parcoursExperience = min(1.0, (float) ($row['parcours_results_count'] ?? 0) / 12.0);
+            $raceExperience = min(1.0, (float) ($row['this_race_results_count'] ?? 0) / 5.0);
+            $seasonWinsPct = min(1.0, $winsCurrentYear / 6.0);
+            $seasonPodiumsPct = min(1.0, $podiumsCurrentYear / 10.0);
+            $raceWinsPct = min(1.0, $winsThisRace / 3.0);
+            $racePodiumsPct = min(1.0, $podiumsThisRace / 5.0);
+            $classificationRaceHistorySignal = ($raceWinsPct * 0.65 + $racePodiumsPct * 0.35)
+                * (0.20 + $raceExperience * 0.80);
+
+            if ($predictionType === 'stage') {
+                $favouriteScore = (
+                    $careerPct * 12.0 +
+                    $pcsPct * 10.0 +
+                    $uciPct * 6.0 +
+                    $seasonPct * 12.0 +
+                    $recentPct * 8.0 +
+                    $coursePct * 8.0 +
+                    $top10Pct * 6.0 +
+                    $currentYearParcoursAvg * 6.0 +
+                    $currentYearParcoursTop10 * 6.0 +
+                    $currentYearStageSubtypeAvg * 12.0 +
+                    $currentYearStageSubtypeTop10 * 10.0 +
+                    $recentStageSubtypeAvg * 8.0 +
+                    $recentStageSubtypeTop10 * 8.0 +
+                    $stageProfileFit * 12.0 +
+                    $stageProfileExperience * 6.0 +
+                    $stageSubtypeExperience * 8.0 +
+                    $seasonWinsPct * 5.0 +
+                    $raceWinsPct * 3.0
+                );
+
+                $specialistScore = (
+                    $coursePct * 14.0 +
+                    $top10Pct * 8.0 +
+                    $parcoursAvg * 8.0 +
+                    $recentParcoursAvg * 6.0 +
+                    $recentParcoursTop10 * 6.0 +
+                    $stageSubtypeAvg * 18.0 +
+                    $recentStageSubtypeAvg * 14.0 +
+                    $currentYearStageSubtypeAvg * 16.0 +
+                    $recentStageSubtypeTop10 * 10.0 +
+                    $currentYearStageSubtypeTop10 * 10.0 +
+                    $stageProfileFit * 16.0 +
+                    $stageProfileExperience * 8.0 +
+                    $stageSubtypeExperience * 10.0 +
+                    $raceSpecificity * 4.0 +
+                    $raceWinsPct * 4.0 +
+                    $racePodiumsPct * 4.0
+                );
+
+                $seasonDominanceScore = (
+                    $seasonPct * 22.0 +
+                    $recentPct * 16.0 +
+                    $currentYearAvg * 10.0 +
+                    $recentAvg * 8.0 +
+                    $currentYearParcoursAvg * 6.0 +
+                    $recentParcoursAvg * 4.0 +
+                    $currentYearStageSubtypeAvg * 12.0 +
+                    $recentStageSubtypeAvg * 8.0 +
+                    $currentYearStageSubtypeTop10 * 8.0 +
+                    $recentStageSubtypeTop10 * 6.0 +
+                    $stageProfileFit * 10.0 +
+                    $stageProfileExperience * 6.0 +
+                    $stageSubtypeExperience * 6.0 +
+                    $seasonWinsPct * 10.0 +
+                    $seasonPodiumsPct * 6.0 +
+                    $careerPct * 4.0
+                );
+            } elseif (in_array($predictionType, ['gc', 'youth'], true)) {
+                $favouriteScore = (
+                    $careerPct * 14.0 +
+                    $pcsPct * 12.0 +
+                    $uciPct * 6.0 +
+                    $seasonPct * 18.0 +
+                    $recentPct * 14.0 +
+                    $coursePct * 14.0 +
+                    $top10Pct * 4.0 +
+                    $currentYearAvg * 12.0 +
+                    $recentAvg * 8.0 +
+                    $currentYearParcoursAvg * 12.0 +
+                    $currentYearParcoursTop10 * 10.0 +
+                    $recentParcoursAvg * 8.0 +
+                    $recentParcoursTop10 * 6.0 +
+                    $seasonWinsPct * 8.0 +
+                    $seasonPodiumsPct * 6.0 +
+                    $classificationRaceHistorySignal * 8.0
+                );
+
+                $specialistScore = (
+                    $coursePct * 20.0 +
+                    $top10Pct * 6.0 +
+                    $parcoursAvg * 18.0 +
+                    $recentParcoursAvg * 14.0 +
+                    $recentParcoursTop10 * 10.0 +
+                    $currentYearParcoursAvg * 14.0 +
+                    $currentYearParcoursTop10 * 10.0 +
+                    $raceSpecificity * (4.0 + $raceExperience * 4.0) +
+                    $classificationRaceHistorySignal * 14.0 +
+                    $parcoursExperience * 8.0 +
+                    $raceExperience * 4.0
+                );
+
+                $seasonDominanceScore = (
+                    $seasonPct * 26.0 +
+                    $recentPct * 18.0 +
+                    $currentYearAvg * 18.0 +
+                    $recentAvg * 10.0 +
+                    $currentYearParcoursAvg * 12.0 +
+                    $recentParcoursAvg * 8.0 +
+                    $seasonWinsPct * 12.0 +
+                    $seasonPodiumsPct * 8.0 +
+                    $careerPct * 6.0
+                );
+            } elseif ($predictionType === 'points') {
+                $favouriteScore = (
+                    $careerPct * 10.0 +
+                    $pcsPct * 10.0 +
+                    $uciPct * 4.0 +
+                    $seasonPct * 18.0 +
+                    $recentPct * 14.0 +
+                    $coursePct * 18.0 +
+                    $top10Pct * 10.0 +
+                    $currentYearParcoursAvg * 14.0 +
+                    $currentYearParcoursTop10 * 12.0 +
+                    $recentParcoursAvg * 8.0 +
+                    $recentParcoursTop10 * 8.0 +
+                    $seasonWinsPct * 8.0 +
+                    $classificationRaceHistorySignal * 8.0
+                );
+
+                $specialistScore = (
+                    $coursePct * 24.0 +
+                    $top10Pct * 14.0 +
+                    $parcoursAvg * 16.0 +
+                    $recentParcoursAvg * 12.0 +
+                    $recentParcoursTop10 * 12.0 +
+                    $currentYearParcoursAvg * 12.0 +
+                    $currentYearParcoursTop10 * 12.0 +
+                    $classificationRaceHistorySignal * 10.0 +
+                    $parcoursExperience * 8.0
+                );
+
+                $seasonDominanceScore = (
+                    $seasonPct * 28.0 +
+                    $recentPct * 18.0 +
+                    $currentYearAvg * 14.0 +
+                    $recentAvg * 10.0 +
+                    $currentYearParcoursAvg * 12.0 +
+                    $recentParcoursAvg * 8.0 +
+                    $seasonWinsPct * 12.0 +
+                    $seasonPodiumsPct * 8.0 +
+                    $top10Pct * 6.0
+                );
+            } elseif ($predictionType === 'kom') {
+                $favouriteScore = (
+                    $careerPct * 10.0 +
+                    $pcsPct * 8.0 +
+                    $uciPct * 4.0 +
+                    $seasonPct * 16.0 +
+                    $recentPct * 12.0 +
+                    $coursePct * 20.0 +
+                    $top10Pct * 6.0 +
+                    $currentYearAvg * 10.0 +
+                    $currentYearParcoursAvg * 16.0 +
+                    $currentYearParcoursTop10 * 12.0 +
+                    $recentParcoursAvg * 10.0 +
+                    $recentParcoursTop10 * 8.0 +
+                    $seasonWinsPct * 6.0 +
+                    $classificationRaceHistorySignal * 6.0
+                );
+
+                $specialistScore = (
+                    $coursePct * 26.0 +
+                    $parcoursAvg * 18.0 +
+                    $recentParcoursAvg * 14.0 +
+                    $recentParcoursTop10 * 10.0 +
+                    $currentYearParcoursAvg * 14.0 +
+                    $currentYearParcoursTop10 * 10.0 +
+                    $classificationRaceHistorySignal * 10.0 +
+                    $parcoursExperience * 10.0 +
+                    $raceExperience * 4.0
+                );
+
+                $seasonDominanceScore = (
+                    $seasonPct * 24.0 +
+                    $recentPct * 16.0 +
+                    $currentYearAvg * 14.0 +
+                    $recentAvg * 8.0 +
+                    $currentYearParcoursAvg * 14.0 +
+                    $recentParcoursAvg * 10.0 +
+                    $seasonWinsPct * 10.0 +
+                    $seasonPodiumsPct * 6.0 +
+                    $careerPct * 4.0
+                );
+            } else {
+                $favouriteScore = (
+                    $careerPct * 18.0 +
+                    $pcsPct * 16.0 +
+                    $uciPct * 8.0 +
+                    $seasonPct * 16.0 +
+                    $recentPct * 12.0 +
+                    $coursePct * 12.0 +
+                    $top10Pct * 8.0 +
+                    $currentYearParcoursAvg * 8.0 +
+                    $currentYearParcoursTop10 * 8.0 +
+                    $seasonWinsPct * 6.0 +
+                    $raceWinsPct * 4.0
+                );
+
+                $specialistScore = (
+                    $coursePct * 26.0 +
+                    $top10Pct * 12.0 +
+                    $parcoursAvg * 14.0 +
+                    $recentParcoursAvg * 10.0 +
+                    $recentParcoursTop10 * 10.0 +
+                    $raceSpecificity * 12.0 +
+                    $raceWinsPct * 16.0 +
+                    $racePodiumsPct * 10.0 +
+                    $parcoursExperience * 6.0 +
+                    $raceExperience * 4.0
+                );
+
+                $seasonDominanceScore = (
+                    $seasonPct * 28.0 +
+                    $recentPct * 20.0 +
+                    $currentYearAvg * 14.0 +
+                    $recentAvg * 10.0 +
+                    $currentYearParcoursAvg * 10.0 +
+                    $recentParcoursAvg * 6.0 +
+                    $seasonWinsPct * 14.0 +
+                    $seasonPodiumsPct * 8.0 +
+                    $careerPct * 6.0
+                );
+            }
+
+            $payload[$index]['favourite_score'] = round(min(100.0, $favouriteScore), 4);
+            $payload[$index]['specialist_score'] = round(min(100.0, $specialistScore), 4);
+            $payload[$index]['season_dominance_score'] = round(min(100.0, $seasonDominanceScore), 4);
+        }
+
+        return $payload;
+    }
+
+    private function effectiveCourseFitMetric(array $row): ?float
+    {
+        if (($row['prediction_type'] ?? null) !== 'stage') {
+            return $this->firstNumeric(
+                $row['avg_position_this_race'] ?? null,
+                $row['current_year_avg_position_parcours'] ?? null,
+                $row['recent_avg_position_parcours'] ?? null,
+                $row['avg_position_parcours'] ?? null,
+                $row['current_year_avg_position'] ?? null,
+                $row['recent_avg_position'] ?? null,
+            );
+        }
+
+        $weighted = $this->weightedAverage([
+            ['value' => $row['current_year_avg_position_stage_subtype'] ?? null, 'weight' => 0.34],
+            ['value' => $row['recent_avg_position_stage_subtype'] ?? null, 'weight' => 0.26],
+            ['value' => $row['avg_position_stage_subtype'] ?? null, 'weight' => 0.22],
+            ['value' => $row['current_year_avg_position_parcours'] ?? null, 'weight' => 0.10],
+            ['value' => $row['recent_avg_position_parcours'] ?? null, 'weight' => 0.05],
+            ['value' => $row['avg_position_parcours'] ?? null, 'weight' => 0.03],
+        ]);
+
+        return $weighted ?? $this->firstNumeric(
+            $row['avg_position_stage_subtype'] ?? null,
+            $row['avg_position_parcours'] ?? null,
+            $row['avg_position_this_race'] ?? null,
+            $row['current_year_avg_position'] ?? null,
+            $row['recent_avg_position'] ?? null,
+        );
+    }
+
+    private function weightedAverage(array $items): ?float
+    {
+        $weightedSum = 0.0;
+        $weightSum = 0.0;
+
+        foreach ($items as $item) {
+            $value = $item['value'] ?? null;
+            $weight = (float) ($item['weight'] ?? 0);
+
+            if (!is_numeric($value) || $weight <= 0) {
+                continue;
+            }
+
+            $weightedSum += (float) $value * $weight;
+            $weightSum += $weight;
+        }
+
+        return $weightSum > 0 ? $weightedSum / $weightSum : null;
+    }
+
+    private function stageProfileFitScore(array $row): float
+    {
+        $subtype = $row['stage_subtype'] ?? 'mixed';
+        $sprint = min(1.0, max(0.0, (float) ($row['sprint_profile_score'] ?? 25.0) / 100.0));
+        $punch = min(1.0, max(0.0, (float) ($row['punch_profile_score'] ?? 25.0) / 100.0));
+        $climb = min(1.0, max(0.0, (float) ($row['climb_profile_score'] ?? 25.0) / 100.0));
+        $tt = min(1.0, max(0.0, (float) ($row['tt_profile_score'] ?? 25.0) / 100.0));
+
+        return match ($subtype) {
+            'sprint' => $sprint,
+            'reduced_sprint' => $sprint * 0.55 + $punch * 0.45,
+            'summit_finish' => $climb * 0.70 + $punch * 0.30,
+            'high_mountain' => $climb * 0.90 + $punch * 0.10,
+            'tt', 'ttt' => $tt,
+            default => 0.25,
+        };
+    }
+
+    private function stageProfileFitExperience(array $row): float
+    {
+        $subtype = $row['stage_subtype'] ?? 'mixed';
+        $sprint = min(1.0, max(0.0, (float) ($row['sprint_profile_experience'] ?? 0.0)));
+        $punch = min(1.0, max(0.0, (float) ($row['punch_profile_experience'] ?? 0.0)));
+        $climb = min(1.0, max(0.0, (float) ($row['climb_profile_experience'] ?? 0.0)));
+        $tt = min(1.0, max(0.0, (float) ($row['tt_profile_experience'] ?? 0.0)));
+
+        return match ($subtype) {
+            'sprint' => $sprint,
+            'reduced_sprint' => $sprint * 0.55 + $punch * 0.45,
+            'summit_finish' => $climb * 0.70 + $punch * 0.30,
+            'high_mountain' => $climb * 0.90 + $punch * 0.10,
+            'tt', 'ttt' => $tt,
+            default => 0.0,
+        };
+    }
+
+    private function firstNumeric(mixed ...$values): ?float
+    {
+        foreach ($values as $value) {
+            if (is_numeric($value)) {
+                return (float) $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function percentileScores(array $values, bool $inverse = false): array
+    {
+        $prepared = collect($values)->map(function ($value, $index) {
+            return [
+                'index' => $index,
+                'value' => is_numeric($value) ? (float) $value : null,
+            ];
+        });
+
+        $valid = $prepared->filter(fn(array $item) => $item['value'] !== null)->sortBy('value')->values();
+        if ($valid->isEmpty()) {
+            return array_fill(0, count($values), 0.5);
+        }
+
+        if ($valid->count() === 1) {
+            return collect($values)->map(fn() => 0.5)->all();
+        }
+
+        $scores = array_fill(0, count($values), 0.5);
+        $maxIndex = max(1, $valid->count() - 1);
+
+        foreach ($valid as $rank => $item) {
+            $percentile = $rank / $maxIndex;
+            $scores[$item['index']] = $inverse ? 1.0 - $percentile : $percentile;
+        }
+
+        return $scores;
+    }
+
+    private function normalizedMetric(mixed $value, float $fallback, bool $inverse = false): float
+    {
+        if (!is_numeric($value)) {
+            $value = $fallback;
+        }
+
+        $normalized = min(1.0, max(0.0, (float) $value / max($fallback, 1.0)));
+
+        return $inverse ? 1.0 - $normalized : $normalized;
+    }
+
+    private function stabilizeCourseHistoryAverage(?float $rawAverage, float $fallback, int $sampleCount, string $predictionType): float
+    {
+        if ($rawAverage === null) {
+            return $fallback;
+        }
+
+        $requiredSamples = match ($predictionType) {
+            'gc', 'youth', 'points', 'kom' => 5.0,
+            'stage' => 3.0,
+            default => 2.0,
+        };
+
+        $reliability = min(1.0, max(0.0, $sampleCount / $requiredSamples));
+
+        return $fallback + (($rawAverage - $fallback) * $reliability);
+    }
+
+    private function getPredictionRiderIds(Race $race): Collection
+    {
+        // 1. Voorkeur: officiële startlijst (race_entries)
+        $fromEntries = $race->entries()->pluck('rider_id');
+        if ($fromEntries->isNotEmpty()) {
+            Log::info("[Prediction] Startlijst gebruikt: {$fromEntries->count()} renners");
+            return $fromEntries->unique()->values();
+        }
+
+        // 2. PCS top competitors zijn nuttig als context, maar niet als vervanging
+        // van een officiële startlijst. Zonder entries voorspellen we niet.
+        $fromTopCompetitors = $this->getTopCompetitorRiderIds($race);
+        if ($fromTopCompetitors->isNotEmpty()) {
+            Log::info("[Prediction] PCS top competitors gevonden ({$fromTopCompetitors->count()}), maar geen officiële startlijst");
+        }
+
+        // 3. Resultaten van de race (als die al beschikbaar zijn)
+        $fromResults = $race->results()
+            ->whereIn('result_type', ['result', 'gc', 'stage'])
+            ->pluck('rider_id')->unique();
+        if ($fromResults->isNotEmpty()) {
+            Log::info("[Prediction] Resultaten gebruikt als startlijst: {$fromResults->count()} renners");
+            return $fromResults;
+        }
+
+        Log::info("[Prediction] Geen officiële startlijst beschikbaar voor {$race->name}");
+        return collect();
+    }
+
+    private function getTopCompetitorRiderIds(Race $race): Collection
+    {
+        try {
+            $data = $this->api->getTopCompetitors($race->pcs_slug, $race->year);
+        } catch (\RuntimeException $e) {
+            Log::info("[Prediction] Geen PCS top competitors voor {$race->name}: {$e->getMessage()}");
+            return collect();
+        }
+
+        return collect($data['riders'] ?? [])
+            ->map(function (array $entry) {
+                $rider = $this->riderSync->syncFromTopCompetitorEntry($entry);
+                return $rider->id;
+            })
+            ->filter()
+            ->unique()
+            ->values();
+    }
+
+    private function topCompetitorMetadata(Race $race, string $riderSlug): array
+    {
+        $cacheKey = "{$race->pcs_slug}:{$race->year}";
+
+        if (!array_key_exists($cacheKey, $this->topCompetitorCache)) {
+            try {
+                $data = $this->api->getTopCompetitors($race->pcs_slug, $race->year);
+            } catch (\RuntimeException $e) {
+                Log::info("[Prediction] Geen PCS top competitors metadata voor {$race->name}: {$e->getMessage()}");
+                $this->topCompetitorCache[$cacheKey] = [];
+            }
+
+            if (!array_key_exists($cacheKey, $this->topCompetitorCache)) {
+                $this->topCompetitorCache[$cacheKey] = collect($data['riders'] ?? [])
+                    ->keyBy('rider_slug')
+                    ->map(fn (array $entry) => [
+                        'rank' => isset($entry['rank']) ? (int) $entry['rank'] : null,
+                        'pcs_points' => isset($entry['pcs_points']) ? (float) $entry['pcs_points'] : null,
+                        'pcs_ranking' => isset($entry['pcs_ranking']) ? (float) $entry['pcs_ranking'] : null,
+                    ])
+                    ->all();
+            }
+        }
+
+        return $this->topCompetitorCache[$cacheKey][$riderSlug] ?? [];
+    }
+
+    private function pcsSeasonSignals(Rider $rider, Race $race, array $pcsTopCompetitor = []): array
+    {
+        $cacheKey = "{$rider->pcs_slug}:{$race->start_date->toDateString()}";
+
+        if (array_key_exists($cacheKey, $this->pcsSeasonSignalsCache)) {
+            return $this->pcsSeasonSignalsCache[$cacheKey];
+        }
+
+        $default = [
+            'recent_activity_count_30d' => 0,
+            'season_finished_count' => 0,
+            'season_top10_rate' => null,
+            'small_race_wins' => 0,
+            'small_race_top10_rate' => null,
+            'recent_nonfinish_count_90d' => 0,
+            'last_incident_days_ago' => null,
+            'comeback_finished_count' => 0,
+            'days_since_last_result' => null,
+        ];
+
+        $topCompetitorRank = isset($pcsTopCompetitor['rank']) ? (int) $pcsTopCompetitor['rank'] : null;
+        $shouldFetch = $race->isOneDay()
+            && (
+                ($topCompetitorRank !== null && $topCompetitorRank <= 20)
+                || (($rider->pcs_ranking ?? 9999) <= 40)
+                || (($rider->career_points ?? 0) >= 700)
+            );
+
+        if (!$shouldFetch) {
+            return $this->pcsSeasonSignalsCache[$cacheKey] = $default;
+        }
+
+        try {
+            $data = $this->api->getRiderResults($rider->pcs_slug, $race->year);
+        } catch (\RuntimeException $e) {
+            Log::info("[Prediction] Geen PCS seizoensresultaten voor {$rider->pcs_slug}: {$e->getMessage()}");
+            return $this->pcsSeasonSignalsCache[$cacheKey] = $default;
+        }
+
+        $cutoff = $race->start_date->copy()->startOfDay();
+        $results = collect($data['results'] ?? [])
+            ->map(function (array $result) {
+                try {
+                    $date = !empty($result['date']) ? \Carbon\Carbon::parse($result['date'])->startOfDay() : null;
+                } catch (\Throwable) {
+                    $date = null;
+                }
+
+                return [
+                    'date' => $date,
+                    'status' => $result['status'] ?? 'finished',
+                    'rank' => isset($result['rank']) && is_numeric($result['rank']) ? (int) $result['rank'] : null,
+                    'race_class' => $result['race_class'] ?? null,
+                ];
+            })
+            ->filter(fn (array $result) => $result['date'] !== null && $result['date']->lt($cutoff))
+            ->sortBy('date')
+            ->values();
+
+        if ($results->isEmpty()) {
+            return $this->pcsSeasonSignalsCache[$cacheKey] = $default;
+        }
+
+        $finished = $results->where('status', 'finished')->values();
+        $recent30Cutoff = $cutoff->copy()->subDays(30);
+        $recent90Cutoff = $cutoff->copy()->subDays(90);
+        $recentActivity30d = $results->filter(fn (array $result) => $result['date']->gte($recent30Cutoff))->count();
+        $recentNonfinishes = $results
+            ->filter(fn (array $result) => $result['status'] !== 'finished' && $result['date']->gte($recent90Cutoff))
+            ->values();
+        $lastIncident = $results->reverse()->first(fn (array $result) => $result['status'] !== 'finished');
+        $lastFinished = $results->last();
+
+        $smallRaces = $finished
+            ->filter(fn (array $result) => $this->isSmallerRaceClass($result['race_class'] ?? null))
+            ->values();
+
+        $seasonFinishedCount = $finished->count();
+        $seasonTop10Rate = $seasonFinishedCount > 0
+            ? round($finished->filter(fn (array $result) => ($result['rank'] ?? 999) <= 10)->count() / $seasonFinishedCount * 100, 2)
+            : null;
+
+        $smallRaceCount = $smallRaces->count();
+        $smallRaceTop10Rate = $smallRaceCount > 0
+            ? round($smallRaces->filter(fn (array $result) => ($result['rank'] ?? 999) <= 10)->count() / $smallRaceCount * 100, 2)
+            : null;
+
+        $comebackFinishedCount = 0;
+        if ($lastIncident !== null) {
+            $comebackFinishedCount = $finished->filter(fn (array $result) => $result['date']->gt($lastIncident['date']))->count();
+        }
+
+        return $this->pcsSeasonSignalsCache[$cacheKey] = [
+            'recent_activity_count_30d' => $recentActivity30d,
+            'season_finished_count' => $seasonFinishedCount,
+            'season_top10_rate' => $seasonTop10Rate,
+            'small_race_wins' => $smallRaces->filter(fn (array $result) => ($result['rank'] ?? 999) === 1)->count(),
+            'small_race_top10_rate' => $smallRaceTop10Rate,
+            'recent_nonfinish_count_90d' => $recentNonfinishes->count(),
+            'last_incident_days_ago' => $lastIncident ? $lastIncident['date']->diffInDays($cutoff) : null,
+            'comeback_finished_count' => $comebackFinishedCount,
+            'days_since_last_result' => $lastFinished ? $lastFinished['date']->diffInDays($cutoff) : null,
+        ];
+    }
+
+    private function isSmallerRaceClass(?string $raceClass): bool
+    {
+        if (!$raceClass) {
+            return false;
+        }
+
+        $value = strtolower($raceClass);
+
+        return str_contains($value, '.pro')
+            || str_contains($value, '.1')
+            || str_contains($value, '.2')
+            || str_contains($value, 'hc');
+    }
+}

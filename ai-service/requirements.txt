@@ -1,0 +1,5 @@
+fastapi==0.115.0
+uvicorn==0.30.0
+procyclingstats==0.2.8
+cloudscraper==1.2.71
+selectolax==0.3.26
