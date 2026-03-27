@@ -1,0 +1,504 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Controllers\Concerns\FormatsPredictionEvaluations;
+use App\Models\Race;
+use App\Models\Rider;
+use App\Models\Team;
+use App\Services\PredictionService;
+use Inertia\Inertia;
+use Inertia\Response;
+
+class RaceController extends Controller
+{
+    use FormatsPredictionEvaluations;
+
+    public function __construct(
+        private PredictionService $predictionService,
+    ) {}
+
+    public function index(): Response
+    {
+        $currentYear = (int) date('Y');
+
+        $seasonRaces = Race::relevant()
+            ->where('year', $currentYear)
+            ->orderBy('start_date', 'asc')
+            ->get();
+
+        $ongoing = $seasonRaces
+            ->filter(fn(Race $race) => $race->isLive())
+            ->values();
+
+        $upcoming = $seasonRaces
+            ->filter(fn(Race $race) => !$race->hasStarted())
+            ->values();
+
+        $recentPast = $seasonRaces
+            ->filter(fn(Race $race) => $race->hasFinished())
+            ->sortByDesc(fn(Race $race) => $race->start_date)
+            ->values();
+
+        // Vorig jaar — voor context/vergelijking
+        $lastYear = Race::relevant()
+            ->where('year', $currentYear - 1)
+            ->orderBy('start_date', 'desc')
+            ->get();
+
+        // Highlights op basis van huidig seizoen
+        $highlights = [
+            [
+                'label' => 'Dit seizoen',
+                'value' => $seasonRaces->count() . ' races',
+                'text'  => 'WorldTour en ProSeries mannenelite wedstrijden in ' . $currentYear . '.',
+            ],
+            [
+                'label' => 'Binnenkort',
+                'value' => $upcoming->count() . ' races',
+                'text'  => 'Wedstrijden die nog op de agenda staan dit seizoen.',
+            ],
+            [
+                'label' => 'Afgelopen',
+                'value' => $recentPast->count() . ' races',
+                'text'  => 'Gereden wedstrijden waarvan resultaten beschikbaar zijn.',
+            ],
+        ];
+
+        return Inertia::render('Races/Index', [
+            'highlights' => $highlights,
+            'ongoing'    => $ongoing->map(fn(Race $r) => $this->formatRaceCard($r)),
+            'upcoming'   => $upcoming->map(fn(Race $r) => $this->formatRaceCard($r)),
+            'recentPast' => $recentPast->map(fn(Race $r) => $this->formatRaceCard($r)),
+            'lastYear'   => $lastYear->map(fn(Race $r) => $this->formatRaceCard($r)),
+            // Legacy: races = alles samen voor componenten die dat verwachten
+            'races'      => $ongoing
+                ->concat($upcoming)
+                ->concat($recentPast)
+                ->map(fn(Race $r) => $this->formatRaceCard($r)),
+        ]);
+    }
+
+    public function show(string $slug): Response
+    {
+        $race = Race::relevant()->where('pcs_slug', $slug)->orderBy('year', 'desc')->firstOrFail();
+        $this->predictionService->refreshRaceIfStale($race);
+        $race->refresh();
+        $primaryContext = $this->primaryPredictionContext($race);
+
+        // ── Actuele resultaten (als de race al gereden is) ──────────────────
+        $actualResults = $race->results()
+            ->where('result_type', $primaryContext['prediction_type'])
+            ->when($primaryContext['prediction_type'] === 'stage', fn($query) => $query->where('stage_number', $primaryContext['stage_number']))
+            ->whereNotNull('position')->where('status', 'finished')
+            ->orderBy('position')->limit(10)
+            ->with('rider.team')->get();
+
+        // ── Predictions (top 10, gefilterd op startlijst als beschikbaar) ──
+        $startlistRiderIds = $race->entries()->pluck('rider_id');
+        $hasStartlist      = $startlistRiderIds->isNotEmpty();
+
+        $predictions = $race->predictions()
+            ->when($hasStartlist, fn($q) => $q->whereIn('rider_id', $startlistRiderIds))
+            ->orderBy('prediction_type')
+            ->orderBy('stage_number')
+            ->orderBy('predicted_position')
+            ->with('rider.team')
+            ->get();
+
+        $primaryPredictions = $predictions
+            ->filter(fn($prediction) => $prediction->prediction_type === $primaryContext['prediction_type']
+                && (int) $prediction->stage_number === (int) $primaryContext['stage_number'])
+            ->sortBy('predicted_position')
+            ->take(10)
+            ->values();
+        $latestPrediction = $predictions
+            ->sortByDesc(fn ($prediction) => optional($prediction->updated_at)->timestamp ?? 0)
+            ->first();
+        $actualByRider = $actualResults->keyBy('rider_id');
+
+        $predictionList = $primaryPredictions->map(function ($p) use ($actualByRider) {
+            $actual = $actualByRider->get($p->rider_id);
+
+            return [
+                'position'          => $p->predicted_position,
+                'rider_slug'        => $p->rider->pcs_slug,
+                'rider'             => $p->rider->full_name,
+                'team'              => $p->rider->team?->name ?? '–',
+                'win_probability'   => round($p->win_probability * 100, 1),
+                'top10_probability' => round($p->top10_probability * 100, 1),
+                'confidence'        => round($p->confidence_score * 100, 0),
+                'actual_position'   => $actual?->position,
+                'features'          => $p->features,
+            ];
+        })->values()->toArray();
+
+        $predictionGroups = $this->formatPredictionGroups($predictions, $primaryContext);
+
+        // ── Contenders (voor het Show component) ───────────────────────────
+        $contenders = [];
+        if ($actualResults->isNotEmpty()) {
+            $contenders = $actualResults->take(3)->map(fn($r, $i) => [
+                'name'       => $r->rider->full_name,
+                'role'       => match($i) { 0 => 'Winnaar', 1 => '2e', default => '3e' },
+                'note'       => $r->rider->team?->name ?? '–',
+                'confidence' => '–',
+            ])->values()->toArray();
+        } elseif ($primaryPredictions->isNotEmpty()) {
+            $contenders = $primaryPredictions->take(3)->map(fn($p, $i) => [
+                'name'       => $p->rider->full_name,
+                'role'       => match($i) { 0 => 'Topfavoriet', 1 => 'Kanshebber', default => 'Donkere outsider' },
+                'note'       => round($p->win_probability * 100, 1) . '% winkans',
+                'confidence' => round($p->top10_probability * 100, 0) . '% top-10',
+            ])->values()->toArray();
+        }
+
+        // ── Race scenarios ──────────────────────────────────────────────────
+        $scenarios = $this->buildScenarios($race, $primaryPredictions);
+
+        // ── Signalen ────────────────────────────────────────────────────────
+        $participantCount = $actualResults->count() ?: $race->entries()->count() ?: '–';
+        $signals = [
+            [
+                'label' => 'Parcours',
+                'value' => ucfirst($race->parcours_type),
+                'text'  => $this->parcoursDescription($race->parcours_type),
+            ],
+            [
+                'label' => 'Koerstype',
+                'value' => $race->isOneDay() ? 'Eendagskoers' : 'Etappekoers',
+                'text'  => $race->isOneDay()
+                    ? 'Alles op één dag — tactiek en timing zijn cruciaal.'
+                    : 'Meerdere etappes — vermoeidheid en klassement tellen zwaar.',
+            ],
+            [
+                'label' => 'Deelnemers',
+                'value' => $participantCount . ($participantCount !== '–' ? ' renners' : ''),
+                'text'  => $actualResults->isNotEmpty()
+                    ? 'Gefinishte renners in de uitslag.'
+                    : 'Renners in de startlijst.',
+            ],
+        ];
+
+        $isFinished = $race->hasFinished();
+        $isLive = $race->isLive();
+
+        return Inertia::render('Races/Show', [
+            'race'        => [
+                ...$this->formatRaceCard($race),
+                'year'      => $race->year,
+                'is_finished' => $isFinished,
+                'is_live'   => $isLive,
+                'startlist_count' => $hasStartlist ? $startlistRiderIds->count() : null,
+                'startlist_synced_at' => $this->formatTimestamp($race->startlist_synced_at),
+                'prediction_model_version' => $latestPrediction?->model_version,
+                'prediction_updated_at' => $this->formatTimestamp($latestPrediction?->updated_at),
+                'outlook'   => $scenarios['outlook'] ?? '',
+                'primaryPredictionTitle' => $this->predictionContextLabel($primaryContext['prediction_type'], $primaryContext['stage_number']),
+            ],
+            'signals'     => $signals,
+            'contenders'  => $contenders,
+            'predictions' => $predictionList,
+            'predictionGroups' => $predictionGroups,
+            'scenarios'   => $scenarios['list'] ?? [],
+            'has_results' => $actualResults->isNotEmpty(),
+            'evaluation'  => $this->formatEvaluationPayload($race, $primaryContext),
+        ]);
+    }
+
+    private function buildScenarios(Race $race, $predictions): array
+    {
+        if ($predictions->isEmpty()) {
+            return ['outlook' => 'Geen voorspellingsdata beschikbaar.', 'list' => []];
+        }
+
+        $top3         = $predictions->take(3)->values();
+        $winner       = $top3->first();
+        $parcours     = $race->parcours_type;
+        $usedRiderIds = [(int) $winner->rider_id];
+
+        $specialists = $predictions
+            ->filter(fn($p) => ($p->features['race_specificity_ratio'] ?? 1) > 2.5)
+            ->values();
+
+        $inForm = $predictions
+            ->filter(fn($p) => ($p->features['form_trend'] ?? 0) < -3)
+            ->values();
+
+        $winPct       = round($winner->win_probability * 100, 1);
+        $challengers  = $this->scenarioChallengersText($top3, $winner->rider_id);
+        $outlook = "{$winner->rider->full_name} gaat als topfavoriet van start met {$winPct}% winkans"
+            . ($challengers ? ", met {$challengers} als dichtste uitdagers." : '.');
+
+        $list = [];
+
+        $spec = $this->pickScenarioCandidate($specialists, $top3, $usedRiderIds);
+        if ($spec) {
+            $historySnippet   = $this->scenarioHistorySnippet($spec);
+            $specChallengers  = $this->scenarioChallengersText($top3, $spec->rider_id);
+
+            $list[] = [
+                'title' => match($parcours) {
+                    'cobbled'  => '🪨 Kasseienscenario',
+                    'mountain' => '⛰️ Klimscenario',
+                    'hilly'    => '🏔️ Puncheurscenario',
+                    default    => '🎯 Specialistscenario',
+                },
+                'text' => "{$spec->rider->full_name} is historisch de specialist op dit parcours {$historySnippet}. "
+                    . ($specChallengers
+                        ? "{$specChallengers} blijven wel in de buurt als de finale niet volledig ontploft."
+                        : 'Als het profiel zijn sterktes uitspeelt, is hij moeilijk te kloppen.'),
+            ];
+        }
+
+        $hot = $this->pickScenarioCandidate($inForm, $top3, $usedRiderIds);
+        if ($hot) {
+            $formChallengers = $this->scenarioChallengersText($top3, $hot->rider_id);
+
+            $list[] = [
+                'title' => '🔥 Vormscenario',
+                'text'  => "{$hot->rider->full_name} rijdt momenteel uitstekend en komt met een sterkere recente vormcurve aan de start. "
+                    . ($formChallengers
+                        ? "{$formChallengers} blijven de meest logische tegenkandidaten in een snelle finale."
+                        : 'Een verrassing is daardoor zeker mogelijk.'),
+            ];
+        }
+
+        $top5winChances = $predictions->take(5)->sum(fn($p) => $p->win_probability);
+        $winnerShare    = $winner->win_probability / max($top5winChances, 0.01);
+
+        if ($winnerShare < 0.35) {
+            $list[] = [
+                'title' => '🎲 Open koers scenario',
+                'text'  => 'De winkansen liggen dicht bij elkaar tussen '
+                    . $this->formatScenarioNameList($top3->pluck('rider.full_name')->all())
+                    . '. Tactiek, timing en ploegenspel worden daardoor doorslaggevend.',
+            ];
+        } else {
+            $list[] = [
+                'title' => '👑 Duidelijke favoriet scenario',
+                'text'  => "{$winner->rider->full_name} heeft een significant voordeel op basis van historische prestaties. "
+                    . ($challengers
+                        ? "{$challengers} blijven wel de dichtste uitdagers voor winst en podium."
+                        : 'Andere ploegen zullen zich moeten organiseren om hem te counteren.'),
+            ];
+        }
+
+        return ['outlook' => $outlook, 'list' => $list];
+    }
+
+    private function pickScenarioCandidate($candidates, $top3, array &$usedRiderIds)
+    {
+        $candidate = $candidates->first(function ($prediction) use ($top3, $usedRiderIds) {
+            return $top3->contains('rider_id', $prediction->rider_id)
+                && !in_array((int) $prediction->rider_id, $usedRiderIds, true);
+        });
+
+        if (!$candidate) {
+            $candidate = $candidates->first(
+                fn($prediction) => !in_array((int) $prediction->rider_id, $usedRiderIds, true)
+            );
+        }
+
+        if (!$candidate) {
+            return null;
+        }
+
+        $usedRiderIds[] = (int) $candidate->rider_id;
+
+        return $candidate;
+    }
+
+    private function scenarioHistorySnippet($prediction): string
+    {
+        $avgPosition = $prediction->features['avg_position_this_race'] ?? null;
+
+        if ($avgPosition === null) {
+            return 'en past aantoonbaar goed bij dit koersprofiel';
+        }
+
+        return '(gemiddelde positie ' . round((float) $avgPosition, 1) . ' op deze koers)';
+    }
+
+    private function scenarioChallengersText($predictions, int $excludeRiderId): ?string
+    {
+        $names = $predictions
+            ->filter(fn($prediction) => (int) $prediction->rider_id !== (int) $excludeRiderId)
+            ->take(2)
+            ->pluck('rider.full_name')
+            ->all();
+
+        if (empty($names)) {
+            return null;
+        }
+
+        return $this->formatScenarioNameList($names);
+    }
+
+    private function formatScenarioNameList(array $names): string
+    {
+        $names = array_values(array_filter($names));
+        $count = count($names);
+
+        if ($count === 0) {
+            return '';
+        }
+
+        if ($count === 1) {
+            return $names[0];
+        }
+
+        if ($count === 2) {
+            return "{$names[0]} en {$names[1]}";
+        }
+
+        $last = array_pop($names);
+
+        return implode(', ', $names) . " en {$last}";
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private function formatRaceCard(Race $race): array
+    {
+        $primaryContext = $this->primaryPredictionContext($race);
+        $isFinished = $race->hasFinished();
+        $isLive = $race->isLive();
+
+        // Echte winnaar (als race al gereden is)
+        $winner = $isFinished
+            ? $race->results()
+                ->where('result_type', $primaryContext['prediction_type'])
+                ->when($primaryContext['prediction_type'] === 'stage', fn($query) => $query->where('stage_number', $primaryContext['stage_number']))
+                ->where('position', 1)
+                ->with('rider')
+                ->first()
+            : null;
+
+        // AI topfavoriet (enkel voor renners die effectief starten)
+        $topPrediction = $race->predictions()
+            ->where('prediction_type', $primaryContext['prediction_type'])
+            ->where('stage_number', $primaryContext['stage_number'])
+            ->when($race->entries()->exists(), fn($q) =>
+                $q->whereIn('rider_id', $race->entries()->pluck('rider_id'))
+            )
+            ->orderBy('predicted_position')
+            ->with('rider')
+            ->first();
+
+        // Aantal renners: entries → resultaten → null
+        $riderCount = $race->entries()->count()
+            ?: $race->results()->distinct('rider_id')->count('rider_id')
+            ?: null;
+
+        // topPick: winnaar als race voorbij is, anders AI-favoriet
+        $topPick = $winner?->rider?->full_name
+            ?? $topPrediction?->rider?->full_name
+            ?? '–';
+
+        // Label voor de topPick
+        $topPickLabel = $winner ? 'Winnaar' : ($topPrediction ? 'Model favoriet' : 'Topfavoriet');
+
+        return [
+            'slug'           => $race->pcs_slug,
+            'name'           => $race->name,
+            'category'       => $race->category ?? ucfirst(str_replace('_', ' ', $race->race_type)),
+            'date'           => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
+            'summary'        => $this->parcoursDescription($race->parcours_type),
+            'terrain'        => ucfirst($race->parcours_type),
+            'race_type'      => $race->isOneDay() ? 'Eendagskoers' : 'Etappekoers',
+            'rider_count'    => $riderCount,
+            'is_finished'    => $isFinished,
+            'is_live'        => $isLive,
+            'has_prediction' => $topPrediction !== null,
+            'win_probability'=> $topPrediction ? round($topPrediction->win_probability * 100, 1) : null,
+            'topPick'        => $topPick,
+            'topPickLabel'   => $topPickLabel,
+        ];
+    }
+
+    private function parcoursDescription(string $type): string
+    {
+        return match($type) {
+            'flat'     => 'Vlak parcours waarbij sprintersploegen het tempo bepalen en de finale vaak in een massasprint eindigt.',
+            'hilly'    => 'Heuvelachtig parcours met herhaalde korte beklimmingen die sterke punchers bevoordelen.',
+            'mountain' => 'Bergrit met zware cols waar klimmers het verschil maken en het klassement beslist wordt.',
+            'tt'       => 'Tijdrit waarbij elke renner solo rijdt en de klok de enige tegenstander is.',
+            'classic'  => 'Klassieker met een mix van terrein, kasseien of hellingen die een allround kampioen vereisen.',
+            default    => 'Gevarieerd parcours met meerdere terreinsoorten.',
+        };
+    }
+
+    private function formatTimestamp($value): ?string
+    {
+        return $value?->copy()->locale('nl_BE')->translatedFormat('d M HH:mm');
+    }
+
+    private function primaryPredictionContext(Race $race): array
+    {
+        return $race->isOneDay()
+            ? ['prediction_type' => 'result', 'stage_number' => 0]
+            : ['prediction_type' => 'gc', 'stage_number' => 0];
+    }
+
+    private function predictionContextLabel(string $predictionType, int $stageNumber = 0): string
+    {
+        return match($predictionType) {
+            'stage'  => "Etappe {$stageNumber}",
+            'gc'     => 'Eindklassement',
+            'points' => 'Puntenklassement',
+            'kom'    => 'Bergklassement',
+            'youth'  => 'Jongerenklassement',
+            default  => 'Uitslag',
+        };
+    }
+
+    private function predictionContextSort(string $predictionType, int $stageNumber = 0): int
+    {
+        return match($predictionType) {
+            'gc'     => 0,
+            'result' => 50,
+            'stage'  => 100 + $stageNumber,
+            'points' => 300,
+            'kom'    => 400,
+            'youth'  => 500,
+            default  => 600,
+        };
+    }
+
+    private function formatPredictionGroups($predictions, array $primaryContext): array
+    {
+        return $predictions
+            ->groupBy(fn($prediction) => $prediction->prediction_type . ':' . (int) $prediction->stage_number)
+            ->sortBy(fn($group) => $this->predictionContextSort(
+                $group->first()->prediction_type,
+                (int) $group->first()->stage_number
+            ))
+            ->map(function ($group) use ($primaryContext) {
+                $first = $group->first();
+
+                return [
+                    'key'        => $first->prediction_type . ':' . (int) $first->stage_number,
+                    'title'      => $this->predictionContextLabel($first->prediction_type, (int) $first->stage_number),
+                    'is_primary' => $first->prediction_type === $primaryContext['prediction_type']
+                        && (int) $first->stage_number === (int) $primaryContext['stage_number'],
+                    'predictions' => $group
+                        ->sortBy('predicted_position')
+                        ->take(10)
+                        ->map(fn($prediction) => [
+                            'position'          => $prediction->predicted_position,
+                            'rider_slug'        => $prediction->rider->pcs_slug,
+                            'rider'             => $prediction->rider->full_name,
+                            'team'              => $prediction->rider->team?->name ?? '–',
+                            'win_probability'   => round($prediction->win_probability * 100, 1),
+                            'top10_probability' => round($prediction->top10_probability * 100, 1),
+                            'confidence'        => round($prediction->confidence_score * 100, 0),
+                        ])
+                        ->values()
+                        ->toArray(),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+}
