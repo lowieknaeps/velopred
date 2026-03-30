@@ -176,6 +176,12 @@ class PredictionService
 
     public function refreshRaceIfStale(Race $race): bool
     {
+        // Vermijd zware sync/predict calls op pagina-load voor afgelopen races.
+        // Deze worden via scheduler/post-result-jobs verwerkt.
+        if ($race->hasFinished()) {
+            return false;
+        }
+
         $latestPrediction = $race->predictions()->latest('updated_at')->first();
         $latestPredictionAt = $latestPrediction?->updated_at;
         $latestResultAt = $race->results()->latest('updated_at')->value('updated_at');
@@ -230,6 +236,7 @@ class PredictionService
         $stageSubtypeCode = $this->stageSubtypeCode($contextStageSubtype);
         $pcsTopCompetitor = $this->topCompetitorMetadata($race, $rider->pcs_slug);
         $pcsSeasonSignals = $this->pcsSeasonSignals($rider, $race, $pcsTopCompetitor);
+        $manualIncident = $this->manualIncidentSignal($rider->pcs_slug, $race->start_date);
         $currentRaceResults = $race->isOneDay()
             ? collect()
             : RaceResult::where('race_id', $race->id)
@@ -266,6 +273,7 @@ class PredictionService
             ->where('races.year', '>=', self::MIN_YEAR)
             ->select(
                 'race_results.position',
+                'race_results.gap_seconds',
                 'race_results.result_type',
                 'race_results.stage_number',
                 'races.year as race_year',
@@ -345,8 +353,10 @@ class PredictionService
                 'podiums_this_race'       => 0,
                 'current_year_avg_position' => null,
                 'current_year_top10_rate' => null,
+                'current_year_close_finish_rate' => null,
                 'current_year_avg_position_parcours' => null,
                 'current_year_top10_rate_parcours' => null,
+                'current_year_close_finish_rate_parcours' => null,
                 'current_year_avg_position_stage_subtype' => null,
                 'current_year_top10_rate_stage_subtype' => null,
                 'sprint_profile_score' => 25.0,
@@ -382,6 +392,8 @@ class PredictionService
                 'pcs_last_incident_days_ago' => $pcsSeasonSignals['last_incident_days_ago'],
                 'pcs_comeback_finished_count' => $pcsSeasonSignals['comeback_finished_count'],
                 'pcs_days_since_last_result' => $pcsSeasonSignals['days_since_last_result'],
+                'manual_incident_penalty' => $manualIncident['penalty'],
+                'manual_incident_days_ago' => $manualIncident['days_ago'],
                 'live_stage_results_count' => $liveStageResultsCount,
                 'live_stage_avg_position' => $liveStageAveragePosition,
                 'live_stage_best_position' => $liveStageBestPosition,
@@ -490,12 +502,22 @@ class PredictionService
             $currentYearTop10Rate = $currentYearResults->zip($cyWeights)
                 ->map(fn($p) => ($p[0]->position <= 10 ? 1 : 0) * $p[1])
                 ->sum() / $cyWeights->sum() * 100;
+            $currentYearCloseFinishRate = $currentYearResults->zip($cyWeights)
+                ->map(function ($p) {
+                    $result = $p[0];
+                    $weight = $p[1];
+                    $isCloseFinish = $this->isCloseFinishResult($result->position, $result->gap_seconds);
+
+                    return ($isCloseFinish ? 1 : 0) * $weight;
+                })
+                ->sum() / $cyWeights->sum() * 100;
             $winsCurrentYear    = $currentYearResults->where('position', 1)->count();
             $podiumsCurrentYear = $currentYearResults->where('position', '<=', 3)->count();
             $currentYearResultsCount = $currentYearResults->count();
         } else {
             $currentYearAvgPosition = null;
             $currentYearTop10Rate   = null;
+            $currentYearCloseFinishRate = null;
             $winsCurrentYear        = 0;
             $podiumsCurrentYear     = 0;
             $currentYearResultsCount = 0;
@@ -512,9 +534,19 @@ class PredictionService
             $currentYearTop10RateParcours = $currentYearParcoursResults->zip($cyParcoursWeights)
                 ->map(fn($p) => ($p[0]->position <= 10 ? 1 : 0) * $p[1])
                 ->sum() / $cyParcoursWeights->sum() * 100;
+            $currentYearCloseFinishRateParcours = $currentYearParcoursResults->zip($cyParcoursWeights)
+                ->map(function ($p) {
+                    $result = $p[0];
+                    $weight = $p[1];
+                    $isCloseFinish = $this->isCloseFinishResult($result->position, $result->gap_seconds);
+
+                    return ($isCloseFinish ? 1 : 0) * $weight;
+                })
+                ->sum() / $cyParcoursWeights->sum() * 100;
         } else {
             $currentYearAvgPositionParcours = null;
             $currentYearTop10RateParcours = null;
+            $currentYearCloseFinishRateParcours = null;
         }
         $currentYearStageSubtypeResults = $currentYearResults->filter(
             fn($r) => in_array(($r->context_stage_subtype ?? null), $relatedStageSubtypes, true)
@@ -587,8 +619,10 @@ class PredictionService
             'podiums_this_race'       => $podiumsThisRace,
             'current_year_avg_position' => $currentYearAvgPosition !== null ? round($currentYearAvgPosition, 2) : null,
             'current_year_top10_rate' => $currentYearTop10Rate !== null ? round($currentYearTop10Rate, 2) : null,
+            'current_year_close_finish_rate' => $currentYearCloseFinishRate !== null ? round($currentYearCloseFinishRate, 2) : null,
             'current_year_avg_position_parcours' => $currentYearAvgPositionParcours !== null ? round($currentYearAvgPositionParcours, 2) : null,
             'current_year_top10_rate_parcours' => $currentYearTop10RateParcours !== null ? round($currentYearTop10RateParcours, 2) : null,
+            'current_year_close_finish_rate_parcours' => $currentYearCloseFinishRateParcours !== null ? round($currentYearCloseFinishRateParcours, 2) : null,
             'current_year_avg_position_stage_subtype' => $currentYearAvgPositionStageSubtype !== null ? round($currentYearAvgPositionStageSubtype, 2) : null,
             'current_year_top10_rate_stage_subtype' => $currentYearTop10RateStageSubtype !== null ? round($currentYearTop10RateStageSubtype, 2) : null,
             'sprint_profile_score' => $stageProfiles['sprint']['score'],
@@ -624,6 +658,8 @@ class PredictionService
             'pcs_last_incident_days_ago' => $pcsSeasonSignals['last_incident_days_ago'],
             'pcs_comeback_finished_count' => $pcsSeasonSignals['comeback_finished_count'],
             'pcs_days_since_last_result' => $pcsSeasonSignals['days_since_last_result'],
+            'manual_incident_penalty' => $manualIncident['penalty'],
+            'manual_incident_days_ago' => $manualIncident['days_ago'],
             'live_stage_results_count' => $liveStageResultsCount,
             'live_stage_avg_position' => $liveStageAveragePosition,
             'live_stage_best_position' => $liveStageBestPosition,
@@ -858,6 +894,21 @@ class PredictionService
             'tt'       => 'tt',
             default    => 'mixed',
         };
+    }
+
+    private function isCloseFinishResult(int|float|null $position, int|float|null $gapSeconds): bool
+    {
+        if ($position === null) {
+            return false;
+        }
+
+        if ($gapSeconds !== null) {
+            return $gapSeconds <= 20;
+        }
+
+        // Sommige uitslagen hebben geen expliciete gap in de bron.
+        // Top-30 zonder gemelde gap behandelen we als "mee in de eerste groep".
+        return $position <= 30;
     }
 
     private function relatedStageSubtypes(?string $stageSubtype): array
@@ -1663,5 +1714,37 @@ class PredictionService
             || str_contains($value, '.1')
             || str_contains($value, '.2')
             || str_contains($value, 'hc');
+    }
+
+    private function manualIncidentSignal(string $riderSlug, \Carbon\CarbonInterface $raceDate): array
+    {
+        $incidents = config('prediction.manual_incidents', []);
+        $incident = $incidents[$riderSlug] ?? null;
+
+        if (!is_array($incident) || empty($incident['date'])) {
+            return ['penalty' => 0.0, 'days_ago' => null];
+        }
+
+        try {
+            $incidentDate = \Carbon\Carbon::parse((string) $incident['date'])->startOfDay();
+        } catch (\Throwable) {
+            return ['penalty' => 0.0, 'days_ago' => null];
+        }
+
+        $daysAgo = $incidentDate->diffInDays($raceDate->copy()->startOfDay(), false);
+        if ($daysAgo < 0) {
+            return ['penalty' => 0.0, 'days_ago' => null];
+        }
+
+        $severity = max(0.0, min(1.0, (float) ($incident['severity'] ?? 0.0)));
+        $decayDays = max(1, (int) ($incident['decay_days'] ?? 21));
+        $decayFactor = max(0.0, 1.0 - ($daysAgo / $decayDays));
+        $penalty = round($severity * $decayFactor, 4);
+
+        if ($penalty <= 0.0) {
+            return ['penalty' => 0.0, 'days_ago' => $daysAgo];
+        }
+
+        return ['penalty' => $penalty, 'days_ago' => $daysAgo];
     }
 }

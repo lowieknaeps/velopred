@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v12"
+MODEL_VERSION = "v16"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -103,8 +103,10 @@ BASE_FEATURE_COLS = [
     "podiums_this_race",        # aantal podiums op déze koers
     "current_year_avg_position",# vorm in huidig seizoen
     "current_year_top10_rate",  # top-10 rate in huidig seizoen
+    "current_year_close_finish_rate",  # % koersen dit seizoen met kleine gap / eerste groep
     "current_year_avg_position_parcours", # vorm dit seizoen op dit parcours
     "current_year_top10_rate_parcours",   # top-10 dit seizoen op dit parcours
+    "current_year_close_finish_rate_parcours",  # % close finishes dit seizoen op dit parcours
     "sprint_profile_score",     # profielscore voor sprintachtige ritten
     "punch_profile_score",      # profielscore voor punch/reduced sprint
     "climb_profile_score",      # profielscore voor bergritten
@@ -125,6 +127,8 @@ BASE_FEATURE_COLS = [
     "parcours_results_count",   # ervaring op dit type parcours
     "this_race_results_count",  # ervaring op precies deze koers
     "race_specificity_ratio",   # hoe groot is de specialisatie op déze koers
+    "manual_incident_penalty",  # handmatige val/blessure-penalty met decay
+    "manual_incident_days_ago", # aantal dagen sinds handmatig incident
     "career_points",            # algemene carrièreniveau-indicator
     "pcs_ranking",              # huidige PCS ranking
     "uci_ranking",              # huidige UCI ranking
@@ -169,8 +173,10 @@ SPECIALIST_FEATURE_COLS = [
     "podiums_this_race",
     "current_year_avg_position",
     "current_year_top10_rate",
+    "current_year_close_finish_rate",
     "current_year_avg_position_parcours",
     "current_year_top10_rate_parcours",
+    "current_year_close_finish_rate_parcours",
     "sprint_profile_score",
     "punch_profile_score",
     "climb_profile_score",
@@ -191,6 +197,8 @@ SPECIALIST_FEATURE_COLS = [
     "parcours_results_count",
     "this_race_results_count",
     "race_specificity_ratio",
+    "manual_incident_penalty",
+    "manual_incident_days_ago",
     "career_points",
     "pcs_ranking",
     "uci_ranking",
@@ -261,8 +269,10 @@ DEFAULT_FEATURE_VALUES = {
     "podiums_this_race": 0.0,
     "current_year_avg_position": 25.0,
     "current_year_top10_rate": 0.0,
+    "current_year_close_finish_rate": 0.0,
     "current_year_avg_position_parcours": 25.0,
     "current_year_top10_rate_parcours": 0.0,
+    "current_year_close_finish_rate_parcours": 0.0,
     "sprint_profile_score": 25.0,
     "punch_profile_score": 25.0,
     "climb_profile_score": 25.0,
@@ -283,6 +293,8 @@ DEFAULT_FEATURE_VALUES = {
     "parcours_results_count": 0.0,
     "this_race_results_count": 0.0,
     "race_specificity_ratio": 1.0,
+    "manual_incident_penalty": 0.0,
+    "manual_incident_days_ago": 999.0,
     "career_points": 0.0,
     "pcs_ranking": 250.0,
     "uci_ranking": 250.0,
@@ -1174,7 +1186,9 @@ class VelopredPredictor:
             stage_subtype_results_count = float(rider.get("stage_subtype_results_count", 0) or 0)
             this_race_results_count = float(rider.get("this_race_results_count", 0) or 0)
             current_year_top10 = float(rider.get("current_year_top10_rate", 0) or 0)
+            current_year_close_finish = float(rider.get("current_year_close_finish_rate", 0) or 0)
             current_year_top10_parcours = float(rider.get("current_year_top10_rate_parcours", 0) or 0)
+            current_year_close_finish_parcours = float(rider.get("current_year_close_finish_rate_parcours", 0) or 0)
             recent_top10_parcours = float(rider.get("recent_top10_rate_parcours", 0) or 0)
             current_year_top10_stage_subtype = float(rider.get("current_year_top10_rate_stage_subtype", 0) or 0)
             recent_top10_stage_subtype = float(rider.get("recent_top10_rate_stage_subtype", 0) or 0)
@@ -1468,6 +1482,8 @@ class VelopredPredictor:
                 pcs_recent_nonfinish_count = float(rider.get("pcs_recent_nonfinish_count_90d", 0) or 0)
                 pcs_comeback_finished_count = float(rider.get("pcs_comeback_finished_count", 0) or 0)
                 pcs_days_since_last_result = rider.get("pcs_days_since_last_result")
+                manual_incident_penalty = float(rider.get("manual_incident_penalty", 0) or 0)
+                manual_incident_days_ago = rider.get("manual_incident_days_ago")
                 form_collapse_score = float(rider.get("form_collapse_score", 0) or 0)
                 reliable_poor_form = float(rider.get("reliable_poor_form", 0) or 0)
                 parcours_breakthrough_ratio = float(rider.get("parcours_breakthrough_ratio", 1) or 1)
@@ -1504,6 +1520,11 @@ class VelopredPredictor:
                         1.0 - min(pcs_comeback_finished_count, 3.0) * 0.22,
                     )
 
+                if manual_incident_penalty > 0:
+                    injury_penalty += manual_incident_penalty * 4.2
+                    if manual_incident_days_ago not in (None, ""):
+                        injury_penalty += max(0.0, 10.0 - float(manual_incident_days_ago)) * 0.08
+
                 if float(rider.get("pcs_recent_activity_count_30d", 0) or 0) >= 4:
                     injury_penalty *= 0.85
 
@@ -1513,17 +1534,43 @@ class VelopredPredictor:
                     current_year_avg_value = None if current_year_avg in (None, "") else float(current_year_avg)
                     if current_year_results_count >= 3.0:
                         if current_year_avg_value is not None:
-                            injury_penalty += max(0.0, current_year_avg_value - 22.0) * 0.55
-                            pcs_signal_bonus += max(0.0, 18.0 - current_year_avg_value) * 0.45
-                        injury_penalty += max(0.0, 40.0 - current_year_top10) * 0.06
-                        pcs_signal_bonus += max(0.0, current_year_top10 - 45.0) * 0.12
+                            injury_penalty += max(0.0, current_year_avg_value - 20.0) * 0.72
+                            pcs_signal_bonus += max(0.0, 17.0 - current_year_avg_value) * 0.55
+                        injury_penalty += max(0.0, 42.0 - current_year_top10) * 0.085
+                        pcs_signal_bonus += max(0.0, current_year_top10 - 40.0) * 0.14
+                        # Koersverloop-signaal: mee zijn in de eerste groep/kleine gap
+                        # mag niet volledig verdwijnen door een zwakke sprintuitslag.
+                        pcs_signal_bonus += max(0.0, current_year_close_finish - 42.0) * 0.05
+                        injury_penalty += max(0.0, 28.0 - current_year_close_finish) * 0.04
+                        pcs_signal_bonus += max(0.0, current_year_close_finish_parcours - 45.0) * 0.04
+                        # Rebound: renner zit frequent in de beslissende groep,
+                        # maar converteert dat nog niet in top-10.
+                        pcs_top_rank_raw = rider.get("pcs_top_competitor_rank")
+                        pcs_top_rank_value = None if pcs_top_rank_raw in (None, "") else float(pcs_top_rank_raw)
+                        if (
+                            pcs_top_rank_value is not None
+                            and pcs_top_rank_value <= 12.0
+                            and current_year_close_finish_parcours >= 70.0
+                            and current_year_top10 <= 45.0
+                        ):
+                            pcs_signal_bonus += (
+                                (current_year_close_finish_parcours - 70.0) * 0.09
+                                + (45.0 - current_year_top10) * 0.06
+                                + max(0.0, 12.0 - pcs_top_rank_value) * 0.22
+                            )
 
                     injury_penalty += reliable_poor_form * 3.5
                     injury_penalty += max(0.0, form_collapse_score) * 2.2
                     pcs_signal_bonus += max(0.0, 1.0 - parcours_breakthrough_ratio) * 2.6
                     if current_year_results_count >= 5.0:
-                        injury_penalty += max(0.0, 15.0 - current_year_top10) * 0.09
-                        pcs_signal_bonus += max(0.0, current_year_top10 - 28.0) * 0.06
+                        injury_penalty += max(0.0, 18.0 - current_year_top10) * 0.16
+                        pcs_signal_bonus += max(0.0, current_year_top10 - 30.0) * 0.09
+
+                    if current_year_results_count >= 6.0:
+                        recent_avg_value = None if recent_avg in (None, "") else float(recent_avg)
+                        if recent_avg_value is not None:
+                            injury_penalty += max(0.0, recent_avg_value - 18.0) * 0.18
+                        injury_penalty += max(0.0, 30.0 - float(recent_top10_parcours)) * 0.06
 
                 adjusted_scores[idx] -= pcs_signal_bonus
                 adjusted_scores[idx] += injury_penalty
