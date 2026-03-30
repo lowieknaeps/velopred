@@ -19,7 +19,7 @@ class RaceController extends Controller
 {
     use FormatsPredictionEvaluations;
     private const RERUN_STATUS_TTL_HOURS = 2;
-    private const RERUN_MAX_RUNNING_MINUTES = 30;
+    private const RERUN_MAX_RUNNING_MINUTES = 12;
     private const RERUN_LEGACY_MAX_RUNNING_MINUTES = 8;
     private const RERUN_EXPECTED_SECONDS = 180;
 
@@ -320,7 +320,7 @@ class RaceController extends Controller
                 ($state['status'] ?? 'running') === 'running'
                 && !$hasLockOrDoneMarkers
                 && $startedAt
-                && now()->diffInMinutes($startedAt) >= self::RERUN_LEGACY_MAX_RUNNING_MINUTES
+                && $startedAt->diffInMinutes(now(), true) >= self::RERUN_LEGACY_MAX_RUNNING_MINUTES
             ) {
                 // Oudere runs (zonder lock/done metadata) mogen niet eindeloos op 95% blijven hangen.
                 $state = [
@@ -333,7 +333,7 @@ class RaceController extends Controller
             } elseif (
                 ($state['status'] ?? 'running') === 'running'
                 && $startedAt
-                && now()->diffInMinutes($startedAt) >= self::RERUN_MAX_RUNNING_MINUTES
+                && $startedAt->diffInMinutes(now(), true) >= self::RERUN_MAX_RUNNING_MINUTES
             ) {
                 // Nieuwe runs met lock/done mogen ook niet oneindig blijven hangen.
                 // Als een lock-file achterblijft door crash/kill, markeer toch als failed na timeout.
