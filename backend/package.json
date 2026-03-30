@@ -4,7 +4,10 @@
     "type": "module",
     "scripts": {
         "build": "vite build",
-        "dev": "vite"
+        "dev": "vite",
+        "dev:app": "php artisan serve --host=127.0.0.1 --port=8080",
+        "dev:vite": "vite --host 127.0.0.1 --port=5173 --strictPort",
+        "dev:full": "concurrently -n app,vite \"php artisan serve --host=127.0.0.1 --port=8080\" \"vite --host 127.0.0.1 --port=5173 --strictPort\""
     },
     "devDependencies": {
         "@tailwindcss/forms": "^0.5.2",
