@@ -295,8 +295,8 @@ export default function Dashboard({ liveBoard = null }) {
                             <article key={card.href} className="vp-panel flex h-full flex-col justify-between p-6">
                                 <div>
                                     <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Bestemming</div>
-                                    <h3 className="mt-4 font-display text-2xl font-semibold tracking-tight text-slate-950">{card.title}</h3>
-                                    <p className="mt-3 text-sm leading-7 text-slate-600">{card.description}</p>
+                                    <h3 className="mt-4 break-words font-display text-2xl font-semibold tracking-tight text-slate-950">{card.title}</h3>
+                                    <p className="mt-3 break-words text-sm leading-7 text-slate-600">{card.description}</p>
                                 </div>
                                 <Link href={card.href} className="vp-button-secondary mt-8 w-fit">
                                     {card.action}

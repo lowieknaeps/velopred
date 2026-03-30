@@ -47,10 +47,10 @@ export default function RaceList({ races = [] }) {
 
                         {/* Naam + omschrijving */}
                         <div>
-                            <h3 className="font-display text-2xl font-semibold tracking-tight text-slate-950">
+                            <h3 className="break-words font-display text-2xl font-semibold tracking-tight text-slate-950">
                                 {race.name}
                             </h3>
-                            <p className="mt-2 text-sm leading-6 text-slate-600">{race.summary}</p>
+                            <p className="mt-2 break-words text-sm leading-6 text-slate-600">{race.summary}</p>
                         </div>
                     </div>
 
@@ -90,11 +90,11 @@ export default function RaceList({ races = [] }) {
 
                         {/* Bottom row: topPick + link */}
                         <div className="flex items-center justify-between gap-4">
-                            <div>
+                            <div className="min-w-0">
                                 <div className="text-xs uppercase tracking-[0.22em] text-slate-400">
                                     {race.topPickLabel ?? 'Topfavoriet'}
                                 </div>
-                                <div className="mt-1 text-base font-semibold text-slate-900">
+                                <div className="mt-1 break-words text-base font-semibold text-slate-900">
                                     {race.topPick}
                                 </div>
                             </div>
