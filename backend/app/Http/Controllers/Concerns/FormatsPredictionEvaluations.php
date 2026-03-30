@@ -26,7 +26,7 @@ trait FormatsPredictionEvaluations
             'exact_position_hits' => $evaluation->exact_position_hits,
             'podium_hits' => $evaluation->podium_hits,
             'mean_absolute_position_error' => $evaluation->mean_absolute_position_error,
-            'evaluated_at' => $evaluation->evaluated_at?->locale('nl_BE')->translatedFormat('d MMM Y HH:mm'),
+            'evaluated_at' => $evaluation->evaluated_at?->locale('nl_BE')->translatedFormat('d MMM Y H:i'),
             'shared_top10' => $metrics['shared_top10'] ?? [],
             'predicted_top10' => $metrics['predicted_top10'] ?? [],
             'actual_top10' => $metrics['actual_top10'] ?? [],
