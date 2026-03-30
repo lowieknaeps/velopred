@@ -78,7 +78,7 @@ export default function RacesShow({
                                 type="button"
                                 onClick={rerunModel}
                                 disabled={processing}
-                                className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                className="vp-button-primary bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
                             >
                                 {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
                             </button>
