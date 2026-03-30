@@ -65,9 +65,6 @@ class PredictionController extends Controller
             ]);
         }
 
-        $this->predictionService->refreshRaceIfStale($race);
-        $race->refresh();
-
         $primaryContext = $this->primaryPredictionContext($race);
 
         // ── Top 10 voorspellingen — alleen renners die effectief starten ─────

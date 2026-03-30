@@ -89,8 +89,6 @@ class RaceController extends Controller
     public function show(string $slug): Response
     {
         $race = Race::relevant()->where('pcs_slug', $slug)->orderBy('year', 'desc')->firstOrFail();
-        $this->predictionService->refreshRaceIfStale($race);
-        $race->refresh();
         $primaryContext = $this->primaryPredictionContext($race);
 
         // ── Actuele resultaten (als de race al gereden is) ──────────────────

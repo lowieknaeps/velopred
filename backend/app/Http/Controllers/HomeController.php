@@ -54,9 +54,6 @@ class HomeController extends Controller
             return null;
         }
 
-        $this->predictionService->refreshRaceIfStale($race);
-        $race->refresh();
-
         $startlistRiderIds = $race->entries()->pluck('rider_id');
 
         $predictions = $race->predictions()
