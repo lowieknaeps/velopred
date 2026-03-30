@@ -1,5 +1,5 @@
 import { Head, useForm } from '@inertiajs/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import PredictionEvaluationPanel from '../../Components/PredictionEvaluationPanel';
 import PredictionTable from '../../Components/PredictionTable';
 import AppLayout from '../../Layouts/AppLayout';
@@ -16,16 +16,59 @@ export default function RacesShow({
 }) {
     const { post, processing } = useForm({});
     const [rerunStarted, setRerunStarted] = useState(false);
+    const [rerunStatus, setRerunStatus] = useState('idle');
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
 
     const rerunModel = () => {
         setRerunStarted(false);
+        setRerunStatus('idle');
         post(`/races/${race.slug}/rerun-model`, {
             preserveScroll: true,
-            onSuccess: () => setRerunStarted(true),
+            onSuccess: () => {
+                setRerunStarted(true);
+                setRerunStatus('running');
+            },
         });
     };
+
+    useEffect(() => {
+        if (!rerunStarted) {
+            return undefined;
+        }
+
+        let cancelled = false;
+
+        const pollStatus = async () => {
+            try {
+                const response = await fetch(`/races/${race.slug}/rerun-model/status`, {
+                    headers: { Accept: 'application/json' },
+                });
+
+                if (!response.ok || cancelled) {
+                    return;
+                }
+
+                const data = await response.json();
+                const status = data?.status ?? 'idle';
+                setRerunStatus(status);
+
+                if (status === 'completed' || status === 'failed') {
+                    setRerunStarted(false);
+                }
+            } catch {
+                // Pollingfout negeren; volgende interval probeert opnieuw.
+            }
+        };
+
+        pollStatus();
+        const interval = window.setInterval(pollStatus, 5000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [race.slug, rerunStarted]);
 
     return (
         <AppLayout>
@@ -77,14 +120,26 @@ export default function RacesShow({
                             <button
                                 type="button"
                                 onClick={rerunModel}
-                                disabled={processing}
+                                disabled={processing || rerunStatus === 'running'}
                                 className="vp-button-primary bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
                             >
                                 {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
                             </button>
-                            {rerunStarted && (
-                                <span className="text-xs font-medium text-emerald-700">
-                                    Herberekening gestart. Vernieuw deze pagina binnen 1-2 minuten.
+                            {(rerunStarted || rerunStatus === 'completed' || rerunStatus === 'failed') && (
+                                <span
+                                    className={`text-xs font-medium ${
+                                        rerunStatus === 'completed'
+                                            ? 'text-emerald-700'
+                                            : rerunStatus === 'failed'
+                                              ? 'text-rose-700'
+                                              : 'text-amber-700'
+                                    }`}
+                                >
+                                    {rerunStatus === 'completed'
+                                        ? 'Herberekening klaar. Vernieuw deze pagina om de nieuwste voorspellingen te zien.'
+                                        : rerunStatus === 'failed'
+                                          ? 'Herberekening duurde te lang. Probeer opnieuw.'
+                                          : 'Herberekening gestart. We melden hier automatisch wanneer het klaar is.'}
                                 </span>
                             )}
                         </div>

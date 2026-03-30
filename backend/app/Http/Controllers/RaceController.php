@@ -7,7 +7,10 @@ use App\Models\Race;
 use App\Models\Rider;
 use App\Models\Team;
 use App\Services\PredictionService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\Process\Process;
@@ -15,6 +18,8 @@ use Symfony\Component\Process\Process;
 class RaceController extends Controller
 {
     use FormatsPredictionEvaluations;
+    private const RERUN_STATUS_TTL_HOURS = 2;
+    private const RERUN_MAX_RUNNING_MINUTES = 30;
 
     public function __construct(
         private PredictionService $predictionService,
@@ -214,6 +219,14 @@ class RaceController extends Controller
             ->where('pcs_slug', $slug)
             ->orderBy('year', 'desc')
             ->firstOrFail();
+        $latestPredictionAt = $this->asCarbon($race->predictions()->max('updated_at'));
+        $startedAt = now();
+
+        Cache::put($this->rerunStatusCacheKey($race), [
+            'status' => 'running',
+            'started_at' => $startedAt->toIso8601String(),
+            'baseline_prediction_updated_at' => $latestPredictionAt?->toIso8601String(),
+        ], now()->addHours(self::RERUN_STATUS_TTL_HOURS));
 
         // Draai de predict-command asynchroon voor enkel deze race.
         // Zo blokkeert de webrequest niet bij zware berekeningen.
@@ -226,6 +239,82 @@ class RaceController extends Controller
         $process->start();
 
         return back(303);
+    }
+
+    public function rerunModelStatus(string $slug): JsonResponse
+    {
+        $race = Race::relevant()
+            ->where('pcs_slug', $slug)
+            ->orderBy('year', 'desc')
+            ->firstOrFail();
+
+        $state = Cache::get($this->rerunStatusCacheKey($race));
+        $latestPredictionAt = $this->asCarbon($race->predictions()->max('updated_at'));
+
+        if (!$state) {
+            return response()->json([
+                'status' => 'idle',
+                'latest_prediction_updated_at' => $this->formatTimestamp($latestPredictionAt),
+            ]);
+        }
+
+        $startedAt = isset($state['started_at']) ? Carbon::parse($state['started_at']) : null;
+        $baselineUpdatedAt = isset($state['baseline_prediction_updated_at']) && $state['baseline_prediction_updated_at']
+            ? Carbon::parse($state['baseline_prediction_updated_at'])
+            : null;
+
+        if (($state['status'] ?? 'running') === 'running') {
+            $isCompleted = false;
+
+            if ($latestPredictionAt) {
+                $isCompleted = $baselineUpdatedAt
+                    ? $latestPredictionAt->gt($baselineUpdatedAt)
+                    : (!$startedAt || $latestPredictionAt->gte($startedAt->copy()->subSeconds(10)));
+            }
+
+            if ($isCompleted) {
+                $state = [
+                    ...$state,
+                    'status' => 'completed',
+                    'completed_at' => now()->toIso8601String(),
+                ];
+
+                Cache::put($this->rerunStatusCacheKey($race), $state, now()->addMinutes(30));
+            } elseif ($startedAt && now()->diffInMinutes($startedAt) >= self::RERUN_MAX_RUNNING_MINUTES) {
+                $state = [
+                    ...$state,
+                    'status' => 'failed',
+                    'failed_at' => now()->toIso8601String(),
+                ];
+
+                Cache::put($this->rerunStatusCacheKey($race), $state, now()->addMinutes(30));
+            }
+        }
+
+        return response()->json([
+            'status' => $state['status'] ?? 'idle',
+            'latest_prediction_updated_at' => $this->formatTimestamp($latestPredictionAt),
+            'started_at' => isset($state['started_at']) ? $this->formatTimestamp(Carbon::parse($state['started_at'])) : null,
+            'completed_at' => isset($state['completed_at']) ? $this->formatTimestamp(Carbon::parse($state['completed_at'])) : null,
+        ]);
+    }
+
+    private function rerunStatusCacheKey(Race $race): string
+    {
+        return "race:{$race->id}:rerun-model-status";
+    }
+
+    private function asCarbon(mixed $value): ?Carbon
+    {
+        if ($value instanceof Carbon) {
+            return $value;
+        }
+
+        if (empty($value)) {
+            return null;
+        }
+
+        return Carbon::parse($value);
     }
 
     private function buildScenarios(Race $race, $predictions): array
