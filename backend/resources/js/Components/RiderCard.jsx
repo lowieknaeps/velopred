@@ -15,13 +15,13 @@ export default function RiderCard({ rider }) {
                 </div>
             </div>
 
-            <div className="mt-6 grid grid-cols-2 gap-3">
-                <div className="rounded-2xl bg-slate-50 p-3">
-                    <div className="text-xs uppercase tracking-[0.22em] text-slate-400">{rider.strengthLabel ?? 'Sterkte'}</div>
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="min-w-0 rounded-2xl bg-slate-50 p-3">
+                    <div className="break-all text-[11px] uppercase tracking-[0.16em] text-slate-400">{rider.strengthLabel ?? 'Sterkte'}</div>
                     <div className="mt-1 break-words text-sm font-semibold text-slate-900">{rider.strength}</div>
                 </div>
-                <div className="rounded-2xl bg-teal-50 p-3">
-                    <div className="text-xs uppercase tracking-[0.22em] text-teal-700">{rider.modelFitLabel ?? 'Modelinschatting'}</div>
+                <div className="min-w-0 rounded-2xl bg-teal-50 p-3">
+                    <div className="break-all text-[11px] uppercase tracking-[0.16em] text-teal-700">{rider.modelFitLabel ?? 'Modelinschatting'}</div>
                     <div className="mt-1 break-words text-sm font-semibold text-teal-950">{rider.modelFit}</div>
                 </div>
             </div>
