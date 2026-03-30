@@ -20,6 +20,7 @@ class RaceController extends Controller
     use FormatsPredictionEvaluations;
     private const RERUN_STATUS_TTL_HOURS = 2;
     private const RERUN_MAX_RUNNING_MINUTES = 30;
+    private const RERUN_LEGACY_MAX_RUNNING_MINUTES = 8;
     private const RERUN_EXPECTED_SECONDS = 180;
 
     public function __construct(
@@ -282,6 +283,7 @@ class RaceController extends Controller
         if (($state['status'] ?? 'running') === 'running') {
             $doneFile = $state['done_file'] ?? null;
             $lockFile = $state['lock_file'] ?? null;
+            $hasLockOrDoneMarkers = is_string($doneFile) || is_string($lockFile);
             $isProcessDone = is_string($doneFile) && is_file($doneFile);
 
             if ($isProcessDone) {
@@ -311,6 +313,20 @@ class RaceController extends Controller
                     ...$state,
                     'status' => 'completed',
                     'completed_at' => now()->toIso8601String(),
+                ];
+
+                Cache::put($this->rerunStatusCacheKey($race), $state, now()->addMinutes(30));
+            } elseif (
+                ($state['status'] ?? 'running') === 'running'
+                && !$hasLockOrDoneMarkers
+                && $startedAt
+                && now()->diffInMinutes($startedAt) >= self::RERUN_LEGACY_MAX_RUNNING_MINUTES
+            ) {
+                // Oudere runs (zonder lock/done metadata) mogen niet eindeloos op 95% blijven hangen.
+                $state = [
+                    ...$state,
+                    'status' => 'failed',
+                    'failed_at' => now()->toIso8601String(),
                 ];
 
                 Cache::put($this->rerunStatusCacheKey($race), $state, now()->addMinutes(30));

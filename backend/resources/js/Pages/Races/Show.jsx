@@ -18,6 +18,7 @@ export default function RacesShow({
     const [rerunStatus, setRerunStatus] = useState('idle');
     const [rerunProgress, setRerunProgress] = useState(0);
     const hasAutoReloaded = useRef(false);
+    const previousRerunStatus = useRef('idle');
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
 
@@ -75,7 +76,10 @@ export default function RacesShow({
     }, [race.slug, rerunStatus]);
 
     useEffect(() => {
-        if (rerunStatus !== 'completed' || hasAutoReloaded.current) {
+        const wasRunning = previousRerunStatus.current === 'running';
+        previousRerunStatus.current = rerunStatus;
+
+        if (rerunStatus !== 'completed' || !wasRunning || hasAutoReloaded.current) {
             return;
         }
 
