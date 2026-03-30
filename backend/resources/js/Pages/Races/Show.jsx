@@ -15,20 +15,17 @@ export default function RacesShow({
     has_results = false,
 }) {
     const { post, processing } = useForm({});
-    const [rerunStarted, setRerunStarted] = useState(false);
     const [rerunStatus, setRerunStatus] = useState('idle');
     const [rerunProgress, setRerunProgress] = useState(0);
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
 
     const rerunModel = () => {
-        setRerunStarted(false);
         setRerunStatus('idle');
         setRerunProgress(0);
         post(`/races/${race.slug}/rerun-model`, {
             preserveScroll: true,
             onSuccess: () => {
-                setRerunStarted(true);
                 setRerunStatus('running');
                 setRerunProgress(5);
             },
@@ -36,10 +33,6 @@ export default function RacesShow({
     };
 
     useEffect(() => {
-        if (!rerunStarted) {
-            return undefined;
-        }
-
         let cancelled = false;
 
         const pollStatus = async () => {
@@ -56,23 +49,28 @@ export default function RacesShow({
                 const status = data?.status ?? 'idle';
                 setRerunStatus(status);
                 setRerunProgress(Number(data?.progress_percent ?? 0));
-
-                if (status === 'completed' || status === 'failed') {
-                    setRerunStarted(false);
-                }
             } catch {
                 // Pollingfout negeren; volgende interval probeert opnieuw.
             }
         };
 
+        // Altijd 1x status ophalen bij page load (ook na refresh).
         pollStatus();
+
+        // Alleen continu pollen als een run bezig is.
+        if (rerunStatus !== 'running') {
+            return () => {
+                cancelled = true;
+            };
+        }
+
         const interval = window.setInterval(pollStatus, 5000);
 
         return () => {
             cancelled = true;
             window.clearInterval(interval);
         };
-    }, [race.slug, rerunStarted]);
+    }, [race.slug, rerunStatus]);
 
     return (
         <AppLayout>
@@ -129,7 +127,7 @@ export default function RacesShow({
                             >
                                 {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
                             </button>
-                            {(rerunStarted || rerunStatus === 'completed' || rerunStatus === 'failed') && (
+                            {(rerunStatus === 'running' || rerunStatus === 'completed' || rerunStatus === 'failed') && (
                                 <div className="w-full max-w-lg space-y-1">
                                     <div className="flex items-center justify-between text-xs">
                                         <span
