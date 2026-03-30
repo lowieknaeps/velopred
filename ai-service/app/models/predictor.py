@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v17"
+MODEL_VERSION = "v18"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1583,6 +1583,34 @@ class VelopredPredictor:
                         if recent_avg_value is not None:
                             injury_penalty += max(0.0, recent_avg_value - 18.0) * 0.18
                         injury_penalty += max(0.0, 30.0 - float(recent_top10_parcours)) * 0.06
+
+                # Vermijd overfitting op kleine samples in zware klassiekers:
+                # sterke korte-termijn uitslagen zonder parcourshistoriek mogen
+                # niet te agressief als topfavoriet eindigen.
+                if prediction_type == "result" and group in {"cobbled", "classic"}:
+                    if parcours_results_count <= 3.0 and this_race_results_count <= 1.0:
+                        current_year_avg_parcours_value = None if current_year_avg_parcours in (None, "") else float(current_year_avg_parcours)
+                        recent_parcours_avg_value = None if recent_avg_parcours in (None, "") else float(recent_avg_parcours)
+                        sample_gap_penalty = (
+                            max(0.0, 4.0 - parcours_results_count) * 0.72
+                            + max(0.0, 2.0 - this_race_results_count) * 0.95
+                            + max(0.0, 3.0 - current_year_results_count) * 0.46
+                        )
+                        if (
+                            current_year_avg_parcours_value is not None
+                            and recent_parcours_avg_value is not None
+                        ):
+                            sample_gap_penalty += max(
+                                0.0,
+                                recent_parcours_avg_value - current_year_avg_parcours_value - 6.0,
+                            ) * 0.12
+
+                        mitigation = float(np.clip(
+                            0.30 + speciality_hills_pct[idx] * 0.35 + pcs_top_rank_pct[idx] * 0.35,
+                            0.30,
+                            1.0,
+                        ))
+                        injury_penalty += sample_gap_penalty * mitigation
 
                 adjusted_scores[idx] -= pcs_signal_bonus
                 adjusted_scores[idx] += injury_penalty
