@@ -333,9 +333,10 @@ class RaceController extends Controller
             } elseif (
                 ($state['status'] ?? 'running') === 'running'
                 && $startedAt
-                && !($lockFile && is_file($lockFile))
                 && now()->diffInMinutes($startedAt) >= self::RERUN_MAX_RUNNING_MINUTES
             ) {
+                // Nieuwe runs met lock/done mogen ook niet oneindig blijven hangen.
+                // Als een lock-file achterblijft door crash/kill, markeer toch als failed na timeout.
                 $state = [
                     ...$state,
                     'status' => 'failed',
