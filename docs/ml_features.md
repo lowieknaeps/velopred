@@ -52,8 +52,10 @@ Dit document bundelt de features die het prediction-model gebruikt.
 |---|---|
 | `current_year_avg_position` | Gewogen gemiddelde positie in het huidige seizoen |
 | `current_year_top10_rate` | Gewogen top-10 rate in het huidige seizoen |
+| `current_year_close_finish_rate` | Percentage resultaten in het huidige seizoen met kleine achterstand (indicatie: mee met eerste groep) |
 | `current_year_avg_position_parcours` | Gewogen gemiddelde positie in het huidige seizoen op hetzelfde parcourstype |
 | `current_year_top10_rate_parcours` | Gewogen top-10 rate in het huidige seizoen op hetzelfde parcourstype |
+| `current_year_close_finish_rate_parcours` | Zelfde close-finish signaal, maar enkel op hetzelfde parcourstype |
 | `current_year_avg_position_stage_subtype` | Gewogen gemiddelde positie in het huidige seizoen op exact hetzelfde rit-subtype |
 | `current_year_top10_rate_stage_subtype` | Gewogen top-10 rate in het huidige seizoen op exact hetzelfde rit-subtype |
 | `wins_current_year` | Aantal zeges in het huidige seizoen |
@@ -83,6 +85,13 @@ Dit document bundelt de features die het prediction-model gebruikt.
 | `stage_subtype_results_count` | Aantal eerdere resultaten op exact hetzelfde rit-subtype |
 | `this_race_results_count` | Aantal eerdere resultaten op exact dezelfde koers |
 
+## Incident-overrides
+
+| Feature | Betekenis |
+|---|---|
+| `manual_incident_penalty` | Handmatige penalty voor recente val/blessure met tijdsverval |
+| `manual_incident_days_ago` | Aantal dagen sinds handmatig incident |
+
 ## Praktische regels
 
 - Alleen resultaten van vóór de racedatum tellen mee.
@@ -92,6 +101,8 @@ Dit document bundelt de features die het prediction-model gebruikt.
 - Etappes worden nu ook onderverdeeld in rit-subtypes: `sprint`, `reduced_sprint`, `summit_finish`, `high_mountain`, `tt` en `ttt`.
 - De training zelf weegt recente seizoenen en zwaardere koerscategorieën ook sterker mee, zodat het model minder blijft hangen in verouderde pelotonverhoudingen.
 - Voor `cobbled` en `classic` races gebruikt de ranking naast het model ook een domeincorrectie voor uitzonderlijke koersspecialisten en topvorm in het huidige seizoen.
+- Voor eendagskoersen gebruikt de ranking naast eindposities ook een koersverloop-signaal (`current_year_close_finish_rate`), zodat renners die regelmatig met de eersten mee zijn niet te hard zakken na een mindere sprint.
+- De backend ondersteunt een generieke incidentlijst (`backend/config/prediction.php`) voor recente valpartijen/blessures. De impact daalt automatisch met `decay_days`.
 - Voor ritten gebruikt de ranking extra parcours- en subtype-specifieke recente en seizoensvorm, plus een expliciete straf voor renners met zwakke historiek op dat ritprofiel.
 - Voor ritten gebruikt de ranking nu ook PCS-specialiteiten als extra stuurinformatie. Sprintetappes leunen dus extra op `pcs_speciality_sprint`, bergritten op `pcs_speciality_climber`, punchritten op `pcs_speciality_hills`, en tijdritten op `pcs_speciality_tt`.
 - Voor etappes is `avg_position_this_race` nu subtype-specifiek binnen dezelfde ronde. Oude Tour-bergritten geven dus geen extra bonus meer op een Tour-sprintetappe.

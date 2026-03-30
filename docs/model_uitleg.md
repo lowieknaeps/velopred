@@ -57,10 +57,12 @@ Voorbeelden:
 - `recent_top10_rate`
 - `current_year_avg_position`
 - `current_year_top10_rate`
+- `current_year_close_finish_rate`
 - `wins_current_year`
 - `podiums_current_year`
 
 Dat zegt: hoe goed rijdt hij nu?
+En ook: zat hij mee in het echte koersverloop (eerste groep) of niet?
 
 ### 3. Parcoursfit
 
@@ -120,6 +122,19 @@ We hebben ook enkele bundels gemaakt van meerdere signalen:
 
 Dat zijn geen handmatige predictions.
 Het zijn samenvattende signalen die het model helpen om sneller echte topfavorieten en specialisten te herkennen.
+
+### 7. Valpartijen en blessures
+
+Naast PCS-signalen kan Velopred ook handmatige incident-overrides gebruiken.
+Dat is nuttig als een recente valpartij of blessure nog niet snel genoeg in externe data zit.
+
+Per renner kun je in `backend/config/prediction.php` een incident instellen met:
+
+- datum
+- severity (0..1)
+- decay_days
+
+De impact op de ranking daalt automatisch in de tijd, zodat het model niet te lang blijft straffen.
 
 ## Waarom zijn er meerdere modellen?
 
