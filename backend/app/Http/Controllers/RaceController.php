@@ -20,6 +20,7 @@ class RaceController extends Controller
     use FormatsPredictionEvaluations;
     private const RERUN_STATUS_TTL_HOURS = 2;
     private const RERUN_MAX_RUNNING_MINUTES = 30;
+    private const RERUN_EXPECTED_SECONDS = 180;
 
     public function __construct(
         private PredictionService $predictionService,
@@ -252,6 +253,7 @@ class RaceController extends Controller
         if (!$state) {
             return response()->json([
                 'status' => 'idle',
+                'progress_percent' => 0,
                 'latest_prediction_updated_at' => $this->formatTimestamp($latestPredictionAt),
             ]);
         }
@@ -289,8 +291,16 @@ class RaceController extends Controller
             }
         }
 
+        $progressPercent = match ($state['status'] ?? 'idle') {
+            'completed' => 100,
+            'failed' => 100,
+            'running' => $this->estimateRunningProgressPercent($startedAt),
+            default => 0,
+        };
+
         return response()->json([
             'status' => $state['status'] ?? 'idle',
+            'progress_percent' => $progressPercent,
             'latest_prediction_updated_at' => $this->formatTimestamp($latestPredictionAt),
             'started_at' => isset($state['started_at']) ? $this->formatTimestamp(Carbon::parse($state['started_at'])) : null,
             'completed_at' => isset($state['completed_at']) ? $this->formatTimestamp(Carbon::parse($state['completed_at'])) : null,
@@ -313,6 +323,18 @@ class RaceController extends Controller
         }
 
         return Carbon::parse($value);
+    }
+
+    private function estimateRunningProgressPercent(?Carbon $startedAt): int
+    {
+        if (!$startedAt) {
+            return 5;
+        }
+
+        $elapsedSeconds = max(0, $startedAt->diffInSeconds(now(), true));
+        $ratio = min(1, $elapsedSeconds / self::RERUN_EXPECTED_SECONDS);
+
+        return (int) max(5, min(95, round($ratio * 95)));
     }
 
     private function buildScenarios(Race $race, $predictions): array

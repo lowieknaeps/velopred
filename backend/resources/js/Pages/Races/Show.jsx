@@ -17,17 +17,20 @@ export default function RacesShow({
     const { post, processing } = useForm({});
     const [rerunStarted, setRerunStarted] = useState(false);
     const [rerunStatus, setRerunStatus] = useState('idle');
+    const [rerunProgress, setRerunProgress] = useState(0);
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
 
     const rerunModel = () => {
         setRerunStarted(false);
         setRerunStatus('idle');
+        setRerunProgress(0);
         post(`/races/${race.slug}/rerun-model`, {
             preserveScroll: true,
             onSuccess: () => {
                 setRerunStarted(true);
                 setRerunStatus('running');
+                setRerunProgress(5);
             },
         });
     };
@@ -52,6 +55,7 @@ export default function RacesShow({
                 const data = await response.json();
                 const status = data?.status ?? 'idle';
                 setRerunStatus(status);
+                setRerunProgress(Number(data?.progress_percent ?? 0));
 
                 if (status === 'completed' || status === 'failed') {
                     setRerunStarted(false);
@@ -126,21 +130,38 @@ export default function RacesShow({
                                 {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
                             </button>
                             {(rerunStarted || rerunStatus === 'completed' || rerunStatus === 'failed') && (
-                                <span
-                                    className={`text-xs font-medium ${
-                                        rerunStatus === 'completed'
-                                            ? 'text-emerald-700'
-                                            : rerunStatus === 'failed'
-                                              ? 'text-rose-700'
-                                              : 'text-amber-700'
-                                    }`}
-                                >
-                                    {rerunStatus === 'completed'
-                                        ? 'Herberekening klaar. Vernieuw deze pagina om de nieuwste voorspellingen te zien.'
-                                        : rerunStatus === 'failed'
-                                          ? 'Herberekening duurde te lang. Probeer opnieuw.'
-                                          : 'Herberekening gestart. We melden hier automatisch wanneer het klaar is.'}
-                                </span>
+                                <div className="w-full max-w-lg space-y-1">
+                                    <div className="flex items-center justify-between text-xs">
+                                        <span
+                                            className={`font-medium ${
+                                                rerunStatus === 'completed'
+                                                    ? 'text-emerald-700'
+                                                    : rerunStatus === 'failed'
+                                                      ? 'text-rose-700'
+                                                      : 'text-amber-700'
+                                            }`}
+                                        >
+                                            {rerunStatus === 'completed'
+                                                ? 'Herberekening klaar. Vernieuw deze pagina om de nieuwste voorspellingen te zien.'
+                                                : rerunStatus === 'failed'
+                                                  ? 'Herberekening duurde te lang. Probeer opnieuw.'
+                                                  : 'Model wordt opnieuw berekend...'}
+                                        </span>
+                                        <span className="font-semibold text-slate-600">{rerunProgress}%</span>
+                                    </div>
+                                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                                        <div
+                                            className={`h-full rounded-full transition-all duration-500 ${
+                                                rerunStatus === 'completed'
+                                                    ? 'bg-emerald-500'
+                                                    : rerunStatus === 'failed'
+                                                      ? 'bg-rose-500'
+                                                      : 'bg-amber-500'
+                                            }`}
+                                            style={{ width: `${Math.max(0, Math.min(100, rerunProgress))}%` }}
+                                        />
+                                    </div>
+                                </div>
                             )}
                         </div>
 
