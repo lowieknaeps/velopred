@@ -11,9 +11,9 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
-use Symfony\Component\Process\Process;
 
 class RaceController extends Controller
 {
@@ -220,22 +220,38 @@ class RaceController extends Controller
             ->firstOrFail();
         $latestPredictionAt = $this->asCarbon($race->predictions()->max('updated_at'));
         $startedAt = now();
+        $token = (string) Str::uuid();
+        $lockFile = "/tmp/velopred-rerun-{$race->id}-{$token}.lock";
+        $doneFile = "/tmp/velopred-rerun-{$race->id}-{$token}.done";
+        $logFile = "/tmp/velopred-rerun-{$race->id}-{$token}.log";
 
         Cache::put($this->rerunStatusCacheKey($race), [
             'status' => 'running',
             'started_at' => $startedAt->toIso8601String(),
             'baseline_prediction_updated_at' => $latestPredictionAt?->toIso8601String(),
+            'run_token' => $token,
+            'lock_file' => $lockFile,
+            'done_file' => $doneFile,
+            'log_file' => $logFile,
         ], now()->addHours(self::RERUN_STATUS_TTL_HOURS));
 
-        // Draai de predict-command asynchroon voor enkel deze race.
-        // Zo blokkeert de webrequest niet bij zware berekeningen.
-        $process = new Process(
-            [PHP_BINARY, 'artisan', 'predict:race', $race->pcs_slug, (string) $race->year],
-            base_path()
+        // Draai de predict-command echt detached met lock/done marker.
+        // Zo kunnen we status betrouwbaar volgen, ook na pagina-refresh.
+        $cmd = sprintf(
+            "/bin/sh -lc %s",
+            escapeshellarg(sprintf(
+                'touch %s; cd %s && %s artisan predict:race %s %s > %s 2>&1; rc=$?; echo $rc > %s; rm -f %s',
+                escapeshellarg($lockFile),
+                escapeshellarg(base_path()),
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg($race->pcs_slug),
+                escapeshellarg((string) $race->year),
+                escapeshellarg($logFile),
+                escapeshellarg($doneFile),
+                escapeshellarg($lockFile),
+            ))
         );
-        $process->setTimeout(null);
-        $process->disableOutput();
-        $process->start();
+        exec($cmd . ' > /dev/null 2>&1 &');
 
         return back(303);
     }
@@ -264,6 +280,24 @@ class RaceController extends Controller
             : null;
 
         if (($state['status'] ?? 'running') === 'running') {
+            $doneFile = $state['done_file'] ?? null;
+            $lockFile = $state['lock_file'] ?? null;
+            $isProcessDone = is_string($doneFile) && is_file($doneFile);
+
+            if ($isProcessDone) {
+                $exitCode = (int) trim((string) @file_get_contents($doneFile));
+                $isSuccess = $exitCode === 0;
+
+                $state = [
+                    ...$state,
+                    'status' => $isSuccess ? 'completed' : 'failed',
+                    'completed_at' => now()->toIso8601String(),
+                    'exit_code' => $exitCode,
+                ];
+
+                Cache::put($this->rerunStatusCacheKey($race), $state, now()->addMinutes(30));
+            }
+
             $isCompleted = false;
 
             if ($latestPredictionAt) {
@@ -272,7 +306,7 @@ class RaceController extends Controller
                     : (!$startedAt || $latestPredictionAt->gte($startedAt->copy()->subSeconds(10)));
             }
 
-            if ($isCompleted) {
+            if (($state['status'] ?? 'running') === 'running' && $isCompleted) {
                 $state = [
                     ...$state,
                     'status' => 'completed',
@@ -280,7 +314,12 @@ class RaceController extends Controller
                 ];
 
                 Cache::put($this->rerunStatusCacheKey($race), $state, now()->addMinutes(30));
-            } elseif ($startedAt && now()->diffInMinutes($startedAt) >= self::RERUN_MAX_RUNNING_MINUTES) {
+            } elseif (
+                ($state['status'] ?? 'running') === 'running'
+                && $startedAt
+                && !($lockFile && is_file($lockFile))
+                && now()->diffInMinutes($startedAt) >= self::RERUN_MAX_RUNNING_MINUTES
+            ) {
                 $state = [
                     ...$state,
                     'status' => 'failed',
