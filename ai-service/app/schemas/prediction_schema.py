@@ -43,8 +43,12 @@ class RiderFeatures(BaseModel):
     recent_top10_rate: Optional[float] = None
     current_year_avg_position: Optional[float] = None
     current_year_top10_rate: Optional[float] = None
+    current_year_close_finish_rate: Optional[float] = None
+    current_year_attack_momentum_rate: Optional[float] = None
     current_year_avg_position_parcours: Optional[float] = None
     current_year_top10_rate_parcours: Optional[float] = None
+    current_year_close_finish_rate_parcours: Optional[float] = None
+    current_year_attack_momentum_rate_parcours: Optional[float] = None
     current_year_avg_position_stage_subtype: Optional[float] = None
     current_year_top10_rate_stage_subtype: Optional[float] = None
     sprint_profile_score: Optional[float] = None
@@ -80,6 +84,8 @@ class RiderFeatures(BaseModel):
     pcs_last_incident_days_ago: Optional[float] = None
     pcs_comeback_finished_count: Optional[float] = None
     pcs_days_since_last_result: Optional[float] = None
+    manual_incident_penalty: Optional[float] = None
+    manual_incident_days_ago: Optional[float] = None
     live_stage_results_count: Optional[float] = None
     live_stage_avg_position: Optional[float] = None
     live_stage_best_position: Optional[float] = None

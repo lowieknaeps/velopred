@@ -272,6 +272,7 @@ class PredictionService
             ->where('races.start_date', '<', $raceDate)
             ->where('races.year', '>=', self::MIN_YEAR)
             ->select(
+                'race_results.race_id',
                 'race_results.position',
                 'race_results.gap_seconds',
                 'race_results.result_type',
@@ -354,9 +355,11 @@ class PredictionService
                 'current_year_avg_position' => null,
                 'current_year_top10_rate' => null,
                 'current_year_close_finish_rate' => null,
+                'current_year_attack_momentum_rate' => null,
                 'current_year_avg_position_parcours' => null,
                 'current_year_top10_rate_parcours' => null,
                 'current_year_close_finish_rate_parcours' => null,
+                'current_year_attack_momentum_rate_parcours' => null,
                 'current_year_avg_position_stage_subtype' => null,
                 'current_year_top10_rate_stage_subtype' => null,
                 'sprint_profile_score' => 25.0,
@@ -491,6 +494,7 @@ class PredictionService
         $winsThisRace       = $thisRace->where('position', 1)->count();
         $podiumsThisRace    = $thisRace->where('position', '<=', 3)->count();
         $thisRaceResultsCount = $thisRace->count();
+        $secondPlaceGapMap = $this->secondPlaceGapMap($contextPrior);
 
         // Huidig seizoen telt apart mee zodat recente topvorm zichtbaar blijft
         $currentYearResults = $contextPrior->filter(fn($r) => (int) $r->race_year === $currentYear);
@@ -511,6 +515,14 @@ class PredictionService
                     return ($isCloseFinish ? 1 : 0) * $weight;
                 })
                 ->sum() / $cyWeights->sum() * 100;
+            $currentYearAttackMomentumRate = $currentYearResults->zip($cyWeights)
+                ->map(function ($p) use ($secondPlaceGapMap) {
+                    $result = $p[0];
+                    $weight = $p[1];
+
+                    return $this->attackMomentumSignal($result, $secondPlaceGapMap) * $weight;
+                })
+                ->sum() / $cyWeights->sum() * 100;
             $winsCurrentYear    = $currentYearResults->where('position', 1)->count();
             $podiumsCurrentYear = $currentYearResults->where('position', '<=', 3)->count();
             $currentYearResultsCount = $currentYearResults->count();
@@ -518,6 +530,7 @@ class PredictionService
             $currentYearAvgPosition = null;
             $currentYearTop10Rate   = null;
             $currentYearCloseFinishRate = null;
+            $currentYearAttackMomentumRate = null;
             $winsCurrentYear        = 0;
             $podiumsCurrentYear     = 0;
             $currentYearResultsCount = 0;
@@ -543,10 +556,19 @@ class PredictionService
                     return ($isCloseFinish ? 1 : 0) * $weight;
                 })
                 ->sum() / $cyParcoursWeights->sum() * 100;
+            $currentYearAttackMomentumRateParcours = $currentYearParcoursResults->zip($cyParcoursWeights)
+                ->map(function ($p) use ($secondPlaceGapMap) {
+                    $result = $p[0];
+                    $weight = $p[1];
+
+                    return $this->attackMomentumSignal($result, $secondPlaceGapMap) * $weight;
+                })
+                ->sum() / $cyParcoursWeights->sum() * 100;
         } else {
             $currentYearAvgPositionParcours = null;
             $currentYearTop10RateParcours = null;
             $currentYearCloseFinishRateParcours = null;
+            $currentYearAttackMomentumRateParcours = null;
         }
         $currentYearStageSubtypeResults = $currentYearResults->filter(
             fn($r) => in_array(($r->context_stage_subtype ?? null), $relatedStageSubtypes, true)
@@ -620,9 +642,11 @@ class PredictionService
             'current_year_avg_position' => $currentYearAvgPosition !== null ? round($currentYearAvgPosition, 2) : null,
             'current_year_top10_rate' => $currentYearTop10Rate !== null ? round($currentYearTop10Rate, 2) : null,
             'current_year_close_finish_rate' => $currentYearCloseFinishRate !== null ? round($currentYearCloseFinishRate, 2) : null,
+            'current_year_attack_momentum_rate' => $currentYearAttackMomentumRate !== null ? round($currentYearAttackMomentumRate, 2) : null,
             'current_year_avg_position_parcours' => $currentYearAvgPositionParcours !== null ? round($currentYearAvgPositionParcours, 2) : null,
             'current_year_top10_rate_parcours' => $currentYearTop10RateParcours !== null ? round($currentYearTop10RateParcours, 2) : null,
             'current_year_close_finish_rate_parcours' => $currentYearCloseFinishRateParcours !== null ? round($currentYearCloseFinishRateParcours, 2) : null,
+            'current_year_attack_momentum_rate_parcours' => $currentYearAttackMomentumRateParcours !== null ? round($currentYearAttackMomentumRateParcours, 2) : null,
             'current_year_avg_position_stage_subtype' => $currentYearAvgPositionStageSubtype !== null ? round($currentYearAvgPositionStageSubtype, 2) : null,
             'current_year_top10_rate_stage_subtype' => $currentYearTop10RateStageSubtype !== null ? round($currentYearTop10RateStageSubtype, 2) : null,
             'sprint_profile_score' => $stageProfiles['sprint']['score'],
@@ -909,6 +933,86 @@ class PredictionService
         // Sommige uitslagen hebben geen expliciete gap in de bron.
         // Top-30 zonder gemelde gap behandelen we als "mee in de eerste groep".
         return $position <= 30;
+    }
+
+    private function secondPlaceGapMap(Collection $results): array
+    {
+        $raceIds = $results->pluck('race_id')->filter()->unique()->values();
+        if ($raceIds->isEmpty()) {
+            return [];
+        }
+
+        return RaceResult::query()
+            ->whereIn('race_id', $raceIds)
+            ->where('status', 'finished')
+            ->where('position', 2)
+            ->whereNotNull('gap_seconds')
+            ->get(['race_id', 'result_type', 'stage_number', 'gap_seconds'])
+            ->mapWithKeys(function ($row) {
+                $key = $this->resultContextKey(
+                    (int) $row->race_id,
+                    (string) $row->result_type,
+                    (int) ($row->stage_number ?? 0),
+                );
+
+                return [$key => (int) $row->gap_seconds];
+            })
+            ->all();
+    }
+
+    private function attackMomentumSignal(object $result, array $secondPlaceGapMap): float
+    {
+        $position = isset($result->position) && is_numeric($result->position) ? (int) $result->position : null;
+        if ($position === null || $position > 15) {
+            return 0.0;
+        }
+
+        $gap = isset($result->gap_seconds) && is_numeric($result->gap_seconds) ? (int) $result->gap_seconds : null;
+        $stageNumber = isset($result->stage_number) && is_numeric($result->stage_number) ? (int) $result->stage_number : 0;
+        $resultType = (string) ($result->result_type ?? 'result');
+        $raceId = isset($result->race_id) && is_numeric($result->race_id) ? (int) $result->race_id : 0;
+
+        if ($position === 1) {
+            $winnerMargin = $gap;
+            if ($raceId > 0) {
+                $key = $this->resultContextKey($raceId, $resultType, $stageNumber);
+                $winnerMargin = $secondPlaceGapMap[$key] ?? $winnerMargin;
+            }
+
+            if ($winnerMargin !== null) {
+                if ($winnerMargin >= 20) return 1.0;
+                if ($winnerMargin >= 8) return 0.85;
+                if ($winnerMargin >= 3) return 0.65;
+                return 0.55;
+            }
+
+            return 0.45;
+        }
+
+        if ($position <= 3) {
+            if ($gap !== null) {
+                if ($gap <= 20) return 0.65;
+                if ($gap <= 45) return 0.35;
+                return 0.10;
+            }
+
+            return 0.20;
+        }
+
+        if ($position <= 10) {
+            if ($gap !== null) {
+                if ($gap <= 20) return 0.35;
+                if ($gap <= 45) return 0.15;
+            }
+            return 0.05;
+        }
+
+        return 0.0;
+    }
+
+    private function resultContextKey(int $raceId, string $resultType, int $stageNumber): string
+    {
+        return "{$raceId}|{$resultType}|{$stageNumber}";
     }
 
     private function relatedStageSubtypes(?string $stageSubtype): array

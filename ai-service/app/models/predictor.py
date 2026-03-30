@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v16"
+MODEL_VERSION = "v17"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -104,9 +104,11 @@ BASE_FEATURE_COLS = [
     "current_year_avg_position",# vorm in huidig seizoen
     "current_year_top10_rate",  # top-10 rate in huidig seizoen
     "current_year_close_finish_rate",  # % koersen dit seizoen met kleine gap / eerste groep
+    "current_year_attack_momentum_rate",  # % recente aanval/wegblijven-signalen
     "current_year_avg_position_parcours", # vorm dit seizoen op dit parcours
     "current_year_top10_rate_parcours",   # top-10 dit seizoen op dit parcours
     "current_year_close_finish_rate_parcours",  # % close finishes dit seizoen op dit parcours
+    "current_year_attack_momentum_rate_parcours",  # aanval/wegblijven op dit parcours
     "sprint_profile_score",     # profielscore voor sprintachtige ritten
     "punch_profile_score",      # profielscore voor punch/reduced sprint
     "climb_profile_score",      # profielscore voor bergritten
@@ -174,9 +176,11 @@ SPECIALIST_FEATURE_COLS = [
     "current_year_avg_position",
     "current_year_top10_rate",
     "current_year_close_finish_rate",
+    "current_year_attack_momentum_rate",
     "current_year_avg_position_parcours",
     "current_year_top10_rate_parcours",
     "current_year_close_finish_rate_parcours",
+    "current_year_attack_momentum_rate_parcours",
     "sprint_profile_score",
     "punch_profile_score",
     "climb_profile_score",
@@ -270,9 +274,11 @@ DEFAULT_FEATURE_VALUES = {
     "current_year_avg_position": 25.0,
     "current_year_top10_rate": 0.0,
     "current_year_close_finish_rate": 0.0,
+    "current_year_attack_momentum_rate": 0.0,
     "current_year_avg_position_parcours": 25.0,
     "current_year_top10_rate_parcours": 0.0,
     "current_year_close_finish_rate_parcours": 0.0,
+    "current_year_attack_momentum_rate_parcours": 0.0,
     "sprint_profile_score": 25.0,
     "punch_profile_score": 25.0,
     "climb_profile_score": 25.0,
@@ -1187,8 +1193,10 @@ class VelopredPredictor:
             this_race_results_count = float(rider.get("this_race_results_count", 0) or 0)
             current_year_top10 = float(rider.get("current_year_top10_rate", 0) or 0)
             current_year_close_finish = float(rider.get("current_year_close_finish_rate", 0) or 0)
+            current_year_attack_momentum = float(rider.get("current_year_attack_momentum_rate", 0) or 0)
             current_year_top10_parcours = float(rider.get("current_year_top10_rate_parcours", 0) or 0)
             current_year_close_finish_parcours = float(rider.get("current_year_close_finish_rate_parcours", 0) or 0)
+            current_year_attack_momentum_parcours = float(rider.get("current_year_attack_momentum_rate_parcours", 0) or 0)
             recent_top10_parcours = float(rider.get("recent_top10_rate_parcours", 0) or 0)
             current_year_top10_stage_subtype = float(rider.get("current_year_top10_rate_stage_subtype", 0) or 0)
             recent_top10_stage_subtype = float(rider.get("recent_top10_rate_stage_subtype", 0) or 0)
@@ -1543,6 +1551,10 @@ class VelopredPredictor:
                         pcs_signal_bonus += max(0.0, current_year_close_finish - 42.0) * 0.05
                         injury_penalty += max(0.0, 28.0 - current_year_close_finish) * 0.04
                         pcs_signal_bonus += max(0.0, current_year_close_finish_parcours - 45.0) * 0.04
+                        # Aanval/wegblijven-signaal telt als vorm in klassiekers.
+                        pcs_signal_bonus += max(0.0, current_year_attack_momentum - 28.0) * 0.08
+                        pcs_signal_bonus += max(0.0, current_year_attack_momentum_parcours - 32.0) * 0.11
+                        injury_penalty += max(0.0, 18.0 - current_year_attack_momentum_parcours) * 0.05
                         # Rebound: renner zit frequent in de beslissende groep,
                         # maar converteert dat nog niet in top-10.
                         pcs_top_rank_raw = rider.get("pcs_top_competitor_rank")

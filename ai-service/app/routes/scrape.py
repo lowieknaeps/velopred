@@ -387,7 +387,7 @@ def _format_results(raw: list[dict], result_type: str) -> list[dict]:
     for r in raw:
         rank = r.get("rank")
         time_str = r.get("time")
-        gap_str = r.get("gap") if result_type == "gc" else None
+        gap_str = r.get("gap")
 
         formatted.append({
             "rider_slug": slug_from_url(r["rider_url"]),
