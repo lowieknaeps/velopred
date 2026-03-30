@@ -1,5 +1,5 @@
 import { Head, useForm } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import PredictionEvaluationPanel from '../../Components/PredictionEvaluationPanel';
 import PredictionTable from '../../Components/PredictionTable';
 import AppLayout from '../../Layouts/AppLayout';
@@ -17,12 +17,14 @@ export default function RacesShow({
     const { post, processing } = useForm({});
     const [rerunStatus, setRerunStatus] = useState('idle');
     const [rerunProgress, setRerunProgress] = useState(0);
+    const hasAutoReloaded = useRef(false);
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
 
     const rerunModel = () => {
         setRerunStatus('idle');
         setRerunProgress(0);
+        hasAutoReloaded.current = false;
         post(`/races/${race.slug}/rerun-model`, {
             preserveScroll: true,
             onSuccess: () => {
@@ -71,6 +73,19 @@ export default function RacesShow({
             window.clearInterval(interval);
         };
     }, [race.slug, rerunStatus]);
+
+    useEffect(() => {
+        if (rerunStatus !== 'completed' || hasAutoReloaded.current) {
+            return;
+        }
+
+        hasAutoReloaded.current = true;
+        const timeout = window.setTimeout(() => {
+            window.location.reload();
+        }, 700);
+
+        return () => window.clearTimeout(timeout);
+    }, [rerunStatus]);
 
     return (
         <AppLayout>
@@ -140,7 +155,7 @@ export default function RacesShow({
                                             }`}
                                         >
                                             {rerunStatus === 'completed'
-                                                ? 'Herberekening klaar. Vernieuw deze pagina om de nieuwste voorspellingen te zien.'
+                                                ? 'Herberekening klaar. Nieuwe voorspellingen worden geladen...'
                                                 : rerunStatus === 'failed'
                                                   ? 'Herberekening duurde te lang. Probeer opnieuw.'
                                                   : 'Model wordt opnieuw berekend...'}
