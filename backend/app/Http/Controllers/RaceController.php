@@ -7,8 +7,10 @@ use App\Models\Race;
 use App\Models\Rider;
 use App\Models\Team;
 use App\Services\PredictionService;
+use Illuminate\Http\RedirectResponse;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\Process\Process;
 
 class RaceController extends Controller
 {
@@ -204,6 +206,26 @@ class RaceController extends Controller
             'has_results' => $actualResults->isNotEmpty(),
             'evaluation'  => $this->formatEvaluationPayload($race, $primaryContext),
         ]);
+    }
+
+    public function rerunModel(string $slug): RedirectResponse
+    {
+        $race = Race::relevant()
+            ->where('pcs_slug', $slug)
+            ->orderBy('year', 'desc')
+            ->firstOrFail();
+
+        // Draai de predict-command asynchroon voor enkel deze race.
+        // Zo blokkeert de webrequest niet bij zware berekeningen.
+        $process = new Process(
+            [PHP_BINARY, 'artisan', 'predict:race', $race->pcs_slug, (string) $race->year],
+            base_path()
+        );
+        $process->setTimeout(null);
+        $process->disableOutput();
+        $process->start();
+
+        return back(303);
     }
 
     private function buildScenarios(Race $race, $predictions): array

@@ -1,4 +1,5 @@
-import { Head } from '@inertiajs/react';
+import { Head, useForm } from '@inertiajs/react';
+import { useState } from 'react';
 import PredictionEvaluationPanel from '../../Components/PredictionEvaluationPanel';
 import PredictionTable from '../../Components/PredictionTable';
 import AppLayout from '../../Layouts/AppLayout';
@@ -13,8 +14,18 @@ export default function RacesShow({
     scenarios = [],
     has_results = false,
 }) {
+    const { post, processing } = useForm({});
+    const [rerunStarted, setRerunStarted] = useState(false);
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
+
+    const rerunModel = () => {
+        setRerunStarted(false);
+        post(`/races/${race.slug}/rerun-model`, {
+            preserveScroll: true,
+            onSuccess: () => setRerunStarted(true),
+        });
+    };
 
     return (
         <AppLayout>
@@ -62,6 +73,21 @@ export default function RacesShow({
                                 {race.prediction_updated_at && <span>Voorspellingen vernieuwd: {race.prediction_updated_at}</span>}
                             </div>
                         )}
+                        <div className="mt-4 flex flex-wrap items-center gap-3">
+                            <button
+                                type="button"
+                                onClick={rerunModel}
+                                disabled={processing}
+                                className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
+                            </button>
+                            {rerunStarted && (
+                                <span className="text-xs font-medium text-emerald-700">
+                                    Herberekening gestart. Vernieuw deze pagina binnen 1-2 minuten.
+                                </span>
+                            )}
+                        </div>
 
                         <div className="mt-8 grid gap-4 sm:grid-cols-3">
                             <div className="rounded-[24px] bg-slate-50 p-4">
@@ -132,7 +158,7 @@ export default function RacesShow({
                                 </h2>
                             </div>
                             <div className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
-                                Model live doorgerekend bij elke update
+                                Handmatig opnieuw runnen per koers mogelijk
                             </div>
                         </div>
 

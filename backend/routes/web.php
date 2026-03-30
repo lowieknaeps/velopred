@@ -13,6 +13,7 @@ Route::get('/', [HomeController::class, 'index']);
 
 Route::get('/races', [RaceController::class, 'index']);
 Route::get('/races/{race}', [RaceController::class, 'show']);
+Route::post('/races/{race}/rerun-model', [RaceController::class, 'rerunModel']);
 
 Route::get('/riders', [RiderController::class, 'index']);
 Route::get('/riders/{rider}', [RiderController::class, 'show']);
