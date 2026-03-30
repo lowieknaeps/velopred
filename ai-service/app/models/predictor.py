@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v18"
+MODEL_VERSION = "v19"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1431,7 +1431,7 @@ class VelopredPredictor:
                         context_penalty += (current_year_avg_value - 24.0) * 0.32
 
                 if current_year_results_count >= 5.0:
-                    context_penalty += max(0.0, 20.0 - float(current_year_top10_rate or 0.0)) * 0.08
+                    context_penalty += max(0.0, 20.0 - float(current_year_top10 or 0.0)) * 0.08
                     if wins_current_year <= 0 and podiums_current_year <= 0:
                         context_penalty += 1.4
 
@@ -1611,6 +1611,19 @@ class VelopredPredictor:
                             1.0,
                         ))
                         injury_penalty += sample_gap_penalty * mitigation
+
+                    # Finale-conversie in klassiekers:
+                    # ervaren renners met sterke sprintafwerking mogen
+                    # extra krediet krijgen voor sprint-/groepaflopen.
+                    sprint_finish_bonus = 0.0
+                    if parcours_results_count >= 4.0 or this_race_results_count >= 2.0:
+                        sprint_finish_bonus += max(0.0, sprint_profile_fit - 0.62) * 2.4
+                        sprint_finish_bonus += max(0.0, speciality_sprint_pct[idx] - 0.64) * 2.8
+                        sprint_finish_bonus += max(0.0, current_year_top10 - 40.0) * 0.045
+                        sprint_finish_bonus += max(0.0, current_year_close_finish_parcours - 45.0) * 0.030
+                        if this_race_results_count >= 2.0:
+                            sprint_finish_bonus += 0.75
+                    adjusted_scores[idx] -= sprint_finish_bonus
 
                 adjusted_scores[idx] -= pcs_signal_bonus
                 adjusted_scores[idx] += injury_penalty
