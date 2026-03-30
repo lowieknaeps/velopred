@@ -155,6 +155,9 @@ class PredictionService
                             'raw_win_probability' => $rawWinProbability,
                             'confidence_score' => $pred['confidence_score'],
                             'features' => $featureSet,
+                            // Forceer timestamp-update ook als de inhoud identiek blijft,
+                            // zodat de UI correct toont wanneer een rerun is uitgevoerd.
+                            'updated_at' => now(),
                         ]
                     );
                     $saved++;
