@@ -17,6 +17,7 @@ export default function RacesShow({
     const { post, processing } = useForm({});
     const [rerunStatus, setRerunStatus] = useState('idle');
     const [rerunProgress, setRerunProgress] = useState(0);
+    const [showRerunFeedback, setShowRerunFeedback] = useState(false);
     const hasAutoReloaded = useRef(false);
     const previousRerunStatus = useRef('idle');
     const hasPredictions = predictions.length > 0;
@@ -25,6 +26,7 @@ export default function RacesShow({
     const rerunModel = () => {
         setRerunStatus('idle');
         setRerunProgress(0);
+        setShowRerunFeedback(true);
         hasAutoReloaded.current = false;
         post(`/races/${race.slug}/rerun-model`, {
             preserveScroll: true,
@@ -52,6 +54,11 @@ export default function RacesShow({
                 const status = data?.status ?? 'idle';
                 setRerunStatus(status);
                 setRerunProgress(Number(data?.progress_percent ?? 0));
+
+                if (status === 'running') {
+                    // Ook na een manuele refresh moet lopende run zichtbaar blijven.
+                    setShowRerunFeedback(true);
+                }
             } catch {
                 // Pollingfout negeren; volgende interval probeert opnieuw.
             }
@@ -78,6 +85,12 @@ export default function RacesShow({
     useEffect(() => {
         const wasRunning = previousRerunStatus.current === 'running';
         previousRerunStatus.current = rerunStatus;
+
+        if ((rerunStatus === 'completed' || rerunStatus === 'failed') && !wasRunning) {
+            // Oude status uit cache (niet door deze sessie gestart): feedback verbergen.
+            setShowRerunFeedback(false);
+            return;
+        }
 
         if (rerunStatus !== 'completed' || !wasRunning || hasAutoReloaded.current) {
             return;
@@ -146,7 +159,7 @@ export default function RacesShow({
                             >
                                 {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
                             </button>
-                            {(rerunStatus === 'running' || rerunStatus === 'completed' || rerunStatus === 'failed') && (
+                            {(showRerunFeedback || rerunStatus === 'running') && (
                                 <div className="w-full max-w-lg space-y-1">
                                     <div className="flex items-center justify-between text-xs">
                                         <span
