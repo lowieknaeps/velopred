@@ -13,28 +13,61 @@ export default function About() {
                         Over mij
                     </h1>
                     <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
-                        Ik ben <strong className="text-slate-900">Lowie Knaeps</strong>. Met Velopred toon ik hoe je wielerdata,
-                        modelvoorspellingen en duidelijke product-UX kunt combineren in één platform dat bruikbaar is voor analyse en presentatie.
+                        Mijn naam is Lowie Knaeps en ik ben student Multimedia en Creatieve Technologie in mijn derde bachelor.
+                        Binnen mijn opleiding heb ik een sterke interesse ontwikkeld in web development, interactieve toepassingen
+                        en de integratie van nieuwe technologieën zoals artificiële intelligentie.
+                    </p>
+                    <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+                        Mijn interesse in wielrennen begon al op jonge leeftijd. Op mijn negende startte ik met competitief
+                        wielrennen, een sport die ik tot mijn achttiende actief heb beoefend. Gedurende die jaren heb ik niet
+                        alleen fysieke prestaties geleverd, maar ook geleerd hoe belangrijk strategie, vorm en wedstrijdinzicht
+                        zijn binnen de sport. Hoewel ik uiteindelijk de keuze maakte om mij volledig te focussen op mijn studies,
+                        is mijn passie voor wielrennen nooit verdwenen. Vandaag volg ik de koers nog steeds intensief, zij het
+                        vanuit een andere rol: die van toeschouwer en analist.
+                    </p>
+                    <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+                        Parallel met mijn interesse in sport groeide ook mijn passie voor technologie. Tijdens mijn opleiding
+                        ontdekte ik vooral een grote interesse in webontwikkeling en het bouwen van gebruiksvriendelijke
+                        interfaces. Daarnaast begon artificiële intelligentie mij steeds meer te fascineren, in het bijzonder
+                        hoe data kan gebruikt worden om patronen te herkennen en voorspellingen te maken.
+                    </p>
+                    <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+                        Het idee voor Velopred is ontstaan vanuit de combinatie van deze twee passies. Ik wilde een project
+                        ontwikkelen dat niet alleen technisch uitdagend is, maar ook persoonlijk relevant. Velopred is daarom
+                        een webplatform dat wielerdata verzamelt, analyseert en visualiseert, aangevuld met een AI-model dat
+                        voorspellingen genereert over wedstrijden en renners.
+                    </p>
+                    <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+                        Binnen dit project ligt de focus niet enkel op het ontwikkelen van een voorspellingsmodel, maar vooral
+                        op het volledige proces er rond: het ophalen en verwerken van data, het ontwerpen van een schaalbare
+                        backend, het bouwen van een interactieve frontend en het integreren van een machine learning model in
+                        een werkende webapplicatie.
+                    </p>
+                    <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
+                        Met Velopred wil ik aantonen hoe data en artificiële intelligentie kunnen toegepast worden binnen de
+                        sportwereld, en hoe deze inzichten op een toegankelijke manier gepresenteerd kunnen worden aan gebruikers.
+                        Tegelijk vormt dit project voor mij een kans om mijn technische vaardigheden verder te verdiepen en een
+                        brug te slaan tussen mijn interesses in technologie en wielrennen.
                     </p>
                 </section>
 
                 <section className="grid gap-4 md:grid-cols-3">
                     <article className="vp-panel p-5">
-                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Studie</div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Opleiding</div>
                         <p className="mt-3 text-sm leading-6 text-slate-600">
-                            Bachelorproef met focus op dataverwerking, voorspelmodellen en uitlegbare visualisatie.
+                            Derde bachelor Multimedia en Creatieve Technologie, met focus op webontwikkeling en AI-integratie.
                         </p>
                     </article>
                     <article className="vp-panel p-5">
-                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Technologie</div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Wielrennen</div>
                         <p className="mt-3 text-sm leading-6 text-slate-600">
-                            Laravel, Inertia, React en Python AI-service met gesynchroniseerde startlijsten en koersresultaten.
+                            Competitief gekoerst van 9 tot 18 jaar, nu nog steeds intensief betrokken als analist en volger.
                         </p>
                     </article>
                     <article className="vp-panel p-5">
-                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Doel</div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Velopred</div>
                         <p className="mt-3 text-sm leading-6 text-slate-600">
-                            Betere koersvoorspellingen bouwen die ook voor niet-technische juryleden meteen begrijpbaar zijn.
+                            Een persoonlijk bachelorproject dat sportdata, AI en bruikbare webinterfaces samenbrengt.
                         </p>
                     </article>
                 </section>
@@ -42,4 +75,3 @@ export default function About() {
         </AppLayout>
     );
 }
-
