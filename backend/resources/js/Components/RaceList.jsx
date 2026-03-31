@@ -1,19 +1,65 @@
 import { Link } from '@inertiajs/react';
 
-const parcoursIcon = {
-    flat:     '⬜',
-    hilly:    '🔷',
-    mountain: '⛰️',
-    cobbled:  '🪨',
-    classic:  '🏆',
-    tt:       '⏱️',
-    mixed:    '🔀',
-};
-
 const raceTypeShort = {
     Eendagskoers: 'Eendags',
     Etappekoers: 'Etappe',
 };
+
+function TerrainIcon({ terrain }) {
+    const key = String(terrain || '').toLowerCase();
+    const baseClass = 'h-4 w-4 text-slate-500';
+
+    if (key === 'mountain') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" className={baseClass} aria-hidden="true">
+                <path d="M3 19h18L14 7l-3 4-2-2-6 10Z" />
+            </svg>
+        );
+    }
+
+    if (key === 'cobbled') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className={baseClass} aria-hidden="true">
+                <rect x="3" y="13" width="5" height="4" rx="1" />
+                <rect x="9.5" y="11" width="5" height="6" rx="1" />
+                <rect x="16" y="13" width="5" height="4" rx="1" />
+                <path d="M3 19h18" />
+            </svg>
+        );
+    }
+
+    if (key === 'tt') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" className={baseClass} aria-hidden="true">
+                <circle cx="12" cy="12" r="8" />
+                <path d="M12 12V8m0 4 3 2" />
+            </svg>
+        );
+    }
+
+    if (key === 'hilly') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" className={baseClass} aria-hidden="true">
+                <path d="M3 17h18M4 17c2-5 5-7 8-4 2-4 5-5 8 4" />
+            </svg>
+        );
+    }
+
+    if (key === 'classic') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={baseClass} aria-hidden="true">
+                <path d="M6 19h12M8 19V9l4-3 4 3v10" />
+                <path d="M10 11h4" />
+            </svg>
+        );
+    }
+
+    return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" className={baseClass} aria-hidden="true">
+            <path d="M4 12h16M12 4v16" />
+        </svg>
+    );
+}
 
 export default function RaceList({ races = [] }) {
     return (
@@ -83,7 +129,7 @@ export default function RaceList({ races = [] }) {
                                     className="mt-1 flex items-center gap-1 truncate text-sm font-semibold leading-tight text-slate-900"
                                     title={race.terrain}
                                 >
-                                    <span>{parcoursIcon[race.terrain?.toLowerCase()] ?? ''}</span>
+                                    <TerrainIcon terrain={race.terrain} />
                                     <span className="truncate">{race.terrain}</span>
                                 </div>
                             </div>
