@@ -129,7 +129,7 @@ export default function RaceList({ races = [] }) {
                                     className="mt-1 flex items-center gap-1 truncate text-sm font-semibold leading-tight text-slate-900"
                                     title={race.terrain}
                                 >
-                                    <TerrainIcon terrain={race.terrain} />
+                                    <TerrainIcon terrain={race.terrain_key ?? race.terrain} />
                                     <span className="truncate">{race.terrain}</span>
                                 </div>
                             </div>

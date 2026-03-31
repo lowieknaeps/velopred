@@ -713,6 +713,7 @@ class RaceController extends Controller
             'date'           => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
             'summary'        => $this->parcoursDescription($race->parcours_type),
             'terrain'        => $this->terrainLabel($race->parcours_type),
+            'terrain_key'    => strtolower((string) $race->parcours_type),
             'race_type'      => $race->isOneDay() ? 'Eendagskoers' : 'Etappekoers',
             'rider_count'    => $riderCount,
             'is_finished'    => $isFinished,
