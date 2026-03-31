@@ -126,7 +126,7 @@ export default function About() {
                             </h2>
                         </div>
                     </div>
-                    <div className="mt-6 grid gap-5 md:grid-cols-2">
+                    <div className="mt-6 grid gap-5 md:grid-cols-3">
                         <article className="overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50">
                             <img
                                 src="/images/about/young.jpg"
@@ -137,6 +137,19 @@ export default function About() {
                                 <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Beginjaren</div>
                                 <p className="mt-2 text-sm leading-6 text-slate-600">
                                     De periode waarin koersinzicht, discipline en wedstrijdgevoel zijn gevormd.
+                                </p>
+                            </div>
+                        </article>
+                        <article className="overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50">
+                            <img
+                                src="/images/about/middle.jpg"
+                                alt="Lowie Knaeps in zijn sterkste koersjaren"
+                                className="h-[290px] w-full object-cover object-[center_28%]"
+                            />
+                            <div className="p-4">
+                                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Topjaren</div>
+                                <p className="mt-2 text-sm leading-6 text-slate-600">
+                                    De jaren waarin ik het beste reed en mijn mooiste momenten op de fiets beleefde.
                                 </p>
                             </div>
                         </article>
