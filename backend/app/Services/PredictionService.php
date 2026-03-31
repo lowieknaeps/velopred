@@ -1971,8 +1971,9 @@ class PredictionService
                 $memberOrder = $member['startlist_order'] ?? null;
                 $orderGap = (is_int($leaderOrder) && is_int($memberOrder)) ? ($memberOrder - $leaderOrder) : 0;
                 $hasOrderPriority = $orderGap >= 1;
+                $orderEligible = $hasOrderPriority && $gap >= -0.02;
 
-                if (!$hasOrderPriority && $gap < 0.10) {
+                if (!$orderEligible && $gap < 0.10) {
                     continue;
                 }
 
@@ -1980,13 +1981,16 @@ class PredictionService
                 $memberWin = (float) ($predictions[$memberIdx]['win_probability'] ?? 0.0);
                 $leaderPos = (int) ($predictions[$leaderIdx]['predicted_position'] ?? 999);
                 $memberPos = (int) ($predictions[$memberIdx]['predicted_position'] ?? 999);
+                if ($orderEligible && $leaderWin < 0.02 && $memberWin > 0.08) {
+                    continue;
+                }
 
                 $memberAhead = $memberPos < $leaderPos || $memberWin > ($leaderWin * 1.03);
                 if (!$memberAhead) {
                     continue;
                 }
 
-                $orderBoost = $hasOrderPriority ? min(0.14, max(0.04, $orderGap * 0.02)) : 0.0;
+                $orderBoost = $orderEligible ? min(0.08, max(0.02, $orderGap * 0.015)) : 0.0;
                 $penaltyFactor = max(0.62, min(0.92, 1 - ($gap * 0.35) - $orderBoost));
                 $newMemberWin = max(0.0, min(1.0, $memberWin * $penaltyFactor));
                 $winTransfer = max(0.0, ($memberWin - $newMemberWin) * 0.8);
@@ -2005,38 +2009,8 @@ class PredictionService
                 $leader['leader_score'] = max($leader['leader_score'], $member['leader_score'] + 0.01);
             }
 
-            // Harde PCS-kopmanprioriteit: binnen een ploeg moet de vroegst
-            // geplaatste startlijstrenner niet achter zijn ploegmaat blijven hangen.
-            $orderedMembers = collect($members)
-                ->filter(fn (array $member) => is_int($member['startlist_order'] ?? null) && (int) $member['startlist_order'] > 0)
-                ->sortBy('startlist_order')
-                ->values()
-                ->all();
-
-            for ($i = 1; $i < count($orderedMembers); $i++) {
-                $leaderIdx = $orderedMembers[$i - 1]['index'];
-                $followerIdx = $orderedMembers[$i]['index'];
-
-                $leaderWin = (float) ($predictions[$leaderIdx]['win_probability'] ?? 0.0);
-                $followerWin = (float) ($predictions[$followerIdx]['win_probability'] ?? 0.0);
-
-                // Max 1.5% marge voor de eerstvolgende ploegmaat.
-                $maxFollowerWin = max(0.0, $leaderWin * 0.985);
-                if ($followerWin > $maxFollowerWin) {
-                    $reduction = $followerWin - $maxFollowerWin;
-                    $predictions[$followerIdx]['win_probability'] = $maxFollowerWin;
-                    $predictions[$leaderIdx]['win_probability'] = min(1.0, max(0.0, $leaderWin + ($reduction * 0.8)));
-                }
-
-                $leaderTop10 = (float) ($predictions[$leaderIdx]['top10_probability'] ?? 0.0);
-                $followerTop10 = (float) ($predictions[$followerIdx]['top10_probability'] ?? 0.0);
-                $maxFollowerTop10 = max(0.0, $leaderTop10 * 0.99);
-                if ($followerTop10 > $maxFollowerTop10) {
-                    $top10Reduction = $followerTop10 - $maxFollowerTop10;
-                    $predictions[$followerIdx]['top10_probability'] = $maxFollowerTop10;
-                    $predictions[$leaderIdx]['top10_probability'] = min(1.0, max(0.0, $leaderTop10 + ($top10Reduction * 0.6)));
-                }
-            }
+            // Geen harde ranking-lock meer op basis van startlijstvolgorde.
+            // Dit gaf foutpositieven (bv. knecht boven duidelijke favorieten).
         }
 
         usort($predictions, function (array $a, array $b) {
