@@ -1,9 +1,40 @@
 import { Link } from '@inertiajs/react';
 
 const raceTypeShort = {
+    Monument: 'Monument',
     Eendagskoers: 'Eendags',
     Etappekoers: 'Etappe',
 };
+
+function TypeIcon({ type }) {
+    const key = String(type || '').toLowerCase();
+    const baseClass = 'h-4 w-4 text-slate-500';
+
+    if (key === 'monument') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={baseClass} aria-hidden="true">
+                <path d="M4 20h16M7 20V9l5-4 5 4v11" />
+                <path d="M10 12h4M10 15h4" />
+            </svg>
+        );
+    }
+
+    if (key === 'etappekoers') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={baseClass} aria-hidden="true">
+                <path d="M3 7h10M3 12h14M3 17h18" />
+                <path d="M16 5l3 2-3 2" />
+            </svg>
+        );
+    }
+
+    return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={baseClass} aria-hidden="true">
+            <circle cx="12" cy="12" r="8" />
+            <path d="M12 8v8M8 12h8" />
+        </svg>
+    );
+}
 
 function TerrainIcon({ terrain }) {
     const key = String(terrain || '').toLowerCase();
@@ -117,10 +148,11 @@ export default function RaceList({ races = [] }) {
                             <div className="min-w-0 rounded-2xl bg-slate-50 p-3">
                                 <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Type</div>
                                 <div
-                                    className="mt-1 truncate text-sm font-semibold leading-tight text-slate-900"
+                                    className="mt-1 flex items-center gap-1 truncate text-sm font-semibold leading-tight text-slate-900"
                                     title={race.race_type}
                                 >
-                                    {raceTypeShort[race.race_type] ?? race.race_type}
+                                    <TypeIcon type={race.race_type} />
+                                    <span className="truncate">{raceTypeShort[race.race_type] ?? race.race_type}</span>
                                 </div>
                             </div>
                             <div className="min-w-0 rounded-2xl bg-slate-50 p-3">

@@ -18,6 +18,13 @@ use Inertia\Response;
 class RaceController extends Controller
 {
     use FormatsPredictionEvaluations;
+    private const MONUMENT_SLUGS = [
+        'milano-sanremo',
+        'ronde-van-vlaanderen',
+        'paris-roubaix',
+        'liege-bastogne-liege',
+        'il-lombardia',
+    ];
     private const RERUN_STATUS_TTL_HOURS = 2;
     private const RERUN_MAX_RUNNING_MINUTES = 12;
     private const RERUN_LEGACY_MAX_RUNNING_MINUTES = 8;
@@ -704,6 +711,9 @@ class RaceController extends Controller
 
         // Label voor de topPick
         $topPickLabel = $winner ? 'Winnaar' : ($topPrediction ? 'Model favoriet' : 'Topfavoriet');
+        $raceTypeLabel = $race->isOneDay()
+            ? ($this->isMonumentRace($race) ? 'Monument' : 'Eendagskoers')
+            : 'Etappekoers';
 
         return [
             'slug'           => $race->pcs_slug,
@@ -714,7 +724,7 @@ class RaceController extends Controller
             'summary'        => $this->parcoursDescription($race->parcours_type),
             'terrain'        => $this->terrainLabel($race->parcours_type),
             'terrain_key'    => strtolower((string) $race->parcours_type),
-            'race_type'      => $race->isOneDay() ? 'Eendagskoers' : 'Etappekoers',
+            'race_type'      => $raceTypeLabel,
             'rider_count'    => $riderCount,
             'is_finished'    => $isFinished,
             'is_live'        => $isLive,
@@ -723,6 +733,11 @@ class RaceController extends Controller
             'topPick'        => $topPick,
             'topPickLabel'   => $topPickLabel,
         ];
+    }
+
+    private function isMonumentRace(Race $race): bool
+    {
+        return in_array($race->pcs_slug, self::MONUMENT_SLUGS, true);
     }
 
     private function raceTier(?string $category): string
