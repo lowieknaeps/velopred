@@ -255,6 +255,11 @@ class RiderController extends Controller
 
     private function fetchPcsPhotoUrl(string $pcsSlug): ?string
     {
+        $localPhotoUrl = $this->localPhotoUrl($pcsSlug);
+        if ($localPhotoUrl !== null) {
+            return $localPhotoUrl;
+        }
+
         try {
             $api = new ExternalCyclingApiService();
             $profile = $api->getRider($pcsSlug);
@@ -274,5 +279,19 @@ class RiderController extends Controller
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    private function localPhotoUrl(string $pcsSlug): ?string
+    {
+        $extensions = ['webp', 'jpg', 'jpeg', 'png'];
+
+        foreach ($extensions as $extension) {
+            $relativePath = "images/riders/{$pcsSlug}.{$extension}";
+            if (is_file(public_path($relativePath))) {
+                return asset($relativePath);
+            }
+        }
+
+        return null;
     }
 }
