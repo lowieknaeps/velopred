@@ -117,6 +117,45 @@ export default function About() {
                     </article>
                 </section>
 
+                <section className="vp-panel p-6 sm:p-8">
+                    <div className="flex flex-wrap items-end justify-between gap-3">
+                        <div>
+                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Toen ik koerste</div>
+                            <h2 className="mt-2 font-display text-3xl font-semibold tracking-tight text-slate-950">
+                                Van jonge renner tot laatste seizoen
+                            </h2>
+                        </div>
+                    </div>
+                    <div className="mt-6 grid gap-5 md:grid-cols-2">
+                        <article className="overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50">
+                            <img
+                                src="/images/about/young.jpg"
+                                alt="Lowie Knaeps als jonge renner"
+                                className="h-[290px] w-full object-cover"
+                            />
+                            <div className="p-4">
+                                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Beginjaren</div>
+                                <p className="mt-2 text-sm leading-6 text-slate-600">
+                                    De periode waarin koersinzicht, discipline en wedstrijdgevoel zijn gevormd.
+                                </p>
+                            </div>
+                        </article>
+                        <article className="overflow-hidden rounded-[24px] border border-slate-200 bg-slate-50">
+                            <img
+                                src="/images/about/old.jpg"
+                                alt="Lowie Knaeps in laatste koersjaar"
+                                className="h-[290px] w-full object-cover"
+                            />
+                            <div className="p-4">
+                                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Laatste jaar</div>
+                                <p className="mt-2 text-sm leading-6 text-slate-600">
+                                    De overgang naar analyse en technologie, met dezelfde passie voor de koers.
+                                </p>
+                            </div>
+                        </article>
+                    </div>
+                </section>
+
                 <section className="vp-panel-dark p-6 sm:p-8">
                     <h2 className="font-display text-3xl font-semibold tracking-tight">Waarom Velopred?</h2>
                     <p className="mt-4 max-w-4xl text-base leading-7 text-slate-300">
