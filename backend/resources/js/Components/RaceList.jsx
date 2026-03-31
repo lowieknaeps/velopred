@@ -62,31 +62,33 @@ export default function RaceList({ races = [] }) {
                     <div className="mt-8 space-y-5">
 
                         {/* Info grid: type + terrein + renners/winkans */}
-                        <div className="grid grid-cols-3 gap-3">
-                            <div className="rounded-2xl bg-slate-50 p-3">
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                            <div className="min-w-0 rounded-2xl bg-slate-50 p-3">
                                 <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Type</div>
-                                <div className="mt-1 text-sm font-semibold text-slate-900">{race.race_type}</div>
+                                <div className="mt-1 break-words text-xs font-semibold leading-tight text-slate-900 sm:text-sm">
+                                    {race.race_type}
+                                </div>
                             </div>
-                            <div className="rounded-2xl bg-slate-50 p-3">
+                            <div className="min-w-0 rounded-2xl bg-slate-50 p-3">
                                 <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Parcours</div>
-                                <div className="mt-1 text-sm font-semibold text-slate-900">
+                                <div className="mt-1 break-words text-xs font-semibold leading-tight text-slate-900 sm:text-sm">
                                     {parcoursIcon[race.terrain?.toLowerCase()] ?? ''} {race.terrain}
                                 </div>
                             </div>
                             {race.win_probability != null ? (
-                                <div className="rounded-2xl bg-indigo-50 p-3">
+                                <div className="min-w-0 rounded-2xl bg-indigo-50 p-3">
                                     <div className="text-xs uppercase tracking-[0.22em] text-indigo-500">Winkans</div>
                                     <div className="mt-1 text-sm font-semibold text-indigo-900">
                                         {race.win_probability}%
                                     </div>
                                 </div>
                             ) : race.rider_count != null ? (
-                                <div className="rounded-2xl bg-slate-50 p-3">
+                                <div className="min-w-0 rounded-2xl bg-slate-50 p-3">
                                     <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Renners</div>
                                     <div className="mt-1 text-sm font-semibold text-slate-900">{race.rider_count}</div>
                                 </div>
                             ) : (
-                                <div className="rounded-2xl bg-slate-50 p-3">
+                                <div className="min-w-0 rounded-2xl bg-slate-50 p-3">
                                     <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Renners</div>
                                     <div className="mt-1 text-sm font-semibold text-slate-400">–</div>
                                 </div>
