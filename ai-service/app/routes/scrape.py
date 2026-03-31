@@ -59,6 +59,24 @@ def _empty_classification(slug: str, year: int, result_type: str) -> dict:
     }
 
 
+def _extract_photo_url_from_html(html: str) -> str | None:
+    """Val terug op metadata wanneer procyclingstats image_url faalt."""
+    tree = HTMLParser(html)
+    selectors = [
+        'meta[property="og:image"]',
+        'meta[name="twitter:image"]',
+        'meta[property="twitter:image"]',
+    ]
+    for selector in selectors:
+        node = tree.css_first(selector)
+        if not node:
+            continue
+        content = node.attributes.get("content")
+        if content:
+            return content.strip()
+    return None
+
+
 # ── Race ──────────────────────────────────────────────────────────────────────
 
 @router.get("/race/{slug}/{year}")
@@ -328,12 +346,14 @@ def scrape_rider(slug: str):
         teams = safe(r.teams_history, []) or []
         current_team = teams[0] if teams else None
 
+        photo_url = safe(r.image_url) or _extract_photo_url_from_html(html)
+
         return {
             "pcs_slug": slug,
             "name": safe(r.name),
             "nationality": safe(r.nationality),
             "birthdate": safe(r.birthdate),
-            "photo_url": safe(r.image_url),
+            "photo_url": photo_url,
             "weight": safe(r.weight),
             "height": safe(r.height),
             "specialities": safe(r.points_per_speciality, {}) or {},

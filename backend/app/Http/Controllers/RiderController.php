@@ -260,7 +260,17 @@ class RiderController extends Controller
             $profile = $api->getRider($pcsSlug);
             $photoUrl = $profile['photo_url'] ?? null;
 
-            return is_string($photoUrl) && trim($photoUrl) !== '' ? $photoUrl : null;
+            if (!is_string($photoUrl) || trim($photoUrl) === '') {
+                return null;
+            }
+
+            $photoUrl = trim($photoUrl);
+            if (str_starts_with($photoUrl, 'http://') || str_starts_with($photoUrl, 'https://')) {
+                return $photoUrl;
+            }
+
+            $normalizedPath = ltrim($photoUrl, '/');
+            return "https://www.procyclingstats.com/{$normalizedPath}";
         } catch (\Throwable) {
             return null;
         }
