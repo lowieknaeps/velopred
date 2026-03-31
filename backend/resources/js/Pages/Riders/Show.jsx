@@ -28,7 +28,7 @@ export default function RidersShow({ rider, indicators = [], recentResults = [],
                                     <img
                                         src={rider.photo_url}
                                         alt={`Profielfoto van ${rider.name}`}
-                                        className="h-full w-full object-cover object-[50%_15%]"
+                                        className="h-full w-full object-cover object-[50%_35%]"
                                         loading="lazy"
                                         referrerPolicy="no-referrer"
                                     />
