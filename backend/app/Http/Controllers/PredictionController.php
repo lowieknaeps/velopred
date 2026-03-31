@@ -217,6 +217,13 @@ class PredictionController extends Controller
         $inForm = $predictions
             ->filter(fn($p) => ($p->features['form_trend'] ?? 0) < -3)
             ->values();
+        $teamControl = $top3
+            ->filter(fn ($p) => ($p->features['team_career_points_share'] ?? 0) >= 0.82)
+            ->sortByDesc(fn ($p) => $p->features['team_career_points_share'] ?? 0)
+            ->values();
+        $attackers = $predictions
+            ->filter(fn ($p) => ($p->features['current_year_attack_momentum_rate'] ?? 0) >= 35)
+            ->values();
 
         $hot = $this->pickScenarioCandidate($inForm, $top3, $usedRiderIds);
         if ($hot) {
@@ -229,6 +236,31 @@ class PredictionController extends Controller
                         ? "Samen met {$challengers} hoort hij bij de renners die koers hard kunnen maken."
                         : 'Recente resultaten zijn aanzienlijk sterker dan verwacht.'),
                 'effect' => "Renners in vorm zijn gevaarlijker dan hun historische ranking doet vermoeden.",
+            ];
+        }
+
+        $teamLeader = $teamControl->first();
+        if ($teamLeader) {
+            $teamShare = round((float) ($teamLeader->features['team_career_points_share'] ?? 0) * 100, 0);
+            $challengers = $this->scenarioChallengersText($top3, $teamLeader->rider_id);
+            $scenarios[] = [
+                'title'  => '🧩 Ploegscenario',
+                'text'   => "{$teamLeader->rider->full_name} vertrekt met een sterk ploegblok ({$teamShare}% relatieve teamsterkte). "
+                    . ($challengers
+                        ? "{$challengers} moeten dit ploegenspel ontregelen om de koers open te breken."
+                        : 'Bij een gecontroleerde koersweergave werkt dit in zijn voordeel.'),
+                'effect' => 'Ploegdiepte verhoogt controle op koersverloop en finale-positionering.',
+            ];
+        }
+
+        $attacker = $this->pickScenarioCandidate($attackers, $top3, $usedRiderIds);
+        if ($attacker) {
+            $attackRate = round((float) ($attacker->features['current_year_attack_momentum_rate'] ?? 0), 0);
+            $scenarios[] = [
+                'title'  => '⚡ Aanvalsscenario',
+                'text'   => "{$attacker->rider->full_name} scoort hoog op recente aanvalssignalen ({$attackRate}%). "
+                    . 'Wanneer de koers vroeg openbreekt, groeit zijn upside het sterkst.',
+                'effect' => 'Vergroot de kans op een vroege beslissende selectie in plaats van sprintslot.',
             ];
         }
 

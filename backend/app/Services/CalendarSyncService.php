@@ -64,6 +64,22 @@ class CalendarSyncService
         'tour-of-guangxi'           => 'mountain',
     ];
 
+    /**
+     * Extra gekende klassiekers buiten WorldTour/ProSeries die we expliciet
+     * willen tonen in de kalender (indien beschikbaar op PCS).
+     */
+    const CURATED_SMALL_CLASSICS = [
+        'de-brabantse-pijl'         => 'hilly',
+        'brabantse-pijl'            => 'hilly',
+        'scheldeprijs'              => 'flat',
+        'nokere-koerse'             => 'flat',
+        'gp-de-denain'              => 'cobbled',
+        'brugge-de-panne'           => 'flat',
+        'dwars-door-het-hageland'   => 'cobbled',
+        'tro-bro-leon'              => 'cobbled',
+        'le-samyn'                  => 'cobbled',
+    ];
+
     public function __construct(
         private ExternalCyclingApiService $api
     ) {}
@@ -118,6 +134,10 @@ class CalendarSyncService
             $exists ? $updated++ : $new++;
         }
 
+        [$extraNew, $extraUpdated] = $this->syncCuratedSmallClassics($year);
+        $new += $extraNew;
+        $updated += $extraUpdated;
+
         Log::info("[CalendarSync] Klaar: {$new} nieuw, {$updated} bijgewerkt");
 
         return [
@@ -125,6 +145,61 @@ class CalendarSyncService
             'updated' => $updated,
             'total'   => count($races),
         ];
+    }
+
+    private function syncCuratedSmallClassics(int $year): array
+    {
+        $new = 0;
+        $updated = 0;
+
+        foreach (self::CURATED_SMALL_CLASSICS as $slug => $fallbackParcours) {
+            try {
+                $meta = $this->api->getRace($slug, $year);
+            } catch (\RuntimeException) {
+                continue;
+            }
+
+            $name = (string) ($meta['name'] ?? $slug);
+            if ($this->isIrrelevant($name)) {
+                continue;
+            }
+
+            $startDate = $meta['start_date'] ?? null;
+            $endDate = $meta['end_date'] ?? $startDate;
+            if (!$startDate || !$endDate) {
+                continue;
+            }
+
+            $exists = Race::where('pcs_slug', $slug)
+                ->where('year', $year)
+                ->exists();
+
+            $isOneDay = $startDate === $endDate;
+            Race::updateOrCreate(
+                [
+                    'pcs_slug' => $slug,
+                    'year' => $year,
+                ],
+                [
+                    'name' => $name,
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'country' => $meta['country'] ?? null,
+                    'category' => $meta['category'] ?? '1.Pro',
+                    'race_type' => $isOneDay ? 'one_day' : 'stage_race',
+                    'parcours_type' => self::PARCOURS_MAP[$slug] ?? $fallbackParcours,
+                    'stages_json' => $meta['stages'] ?? null,
+                ]
+            );
+
+            $exists ? $updated++ : $new++;
+        }
+
+        if ($new > 0 || $updated > 0) {
+            Log::info("[CalendarSync] Extra klassiekers: {$new} nieuw, {$updated} bijgewerkt");
+        }
+
+        return [$new, $updated];
     }
 
     /**

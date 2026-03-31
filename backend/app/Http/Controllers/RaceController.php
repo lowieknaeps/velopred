@@ -60,7 +60,7 @@ class RaceController extends Controller
             [
                 'label' => 'Dit seizoen',
                 'value' => $seasonRaces->count() . ' races',
-                'text'  => 'WorldTour en ProSeries mannenelite wedstrijden in ' . $currentYear . '.',
+                'text'  => 'Mannenelite koersen in ' . $currentYear . ', inclusief extra klassiekers buiten WorldTour.',
             ],
             [
                 'label' => 'Binnenkort',
@@ -500,6 +500,13 @@ class RaceController extends Controller
         $inForm = $predictions
             ->filter(fn($p) => ($p->features['form_trend'] ?? 0) < -3)
             ->values();
+        $teamControl = $top3
+            ->filter(fn ($p) => ($p->features['team_career_points_share'] ?? 0) >= 0.82)
+            ->sortByDesc(fn ($p) => $p->features['team_career_points_share'] ?? 0)
+            ->values();
+        $attackers = $predictions
+            ->filter(fn ($p) => ($p->features['current_year_attack_momentum_rate'] ?? 0) >= 35)
+            ->values();
 
         $winPct       = round($winner->win_probability * 100, 1);
         $challengers  = $this->scenarioChallengersText($top3, $winner->rider_id);
@@ -537,6 +544,29 @@ class RaceController extends Controller
                     . ($formChallengers
                         ? "{$formChallengers} blijven de meest logische tegenkandidaten in een snelle finale."
                         : 'Een verrassing is daardoor zeker mogelijk.'),
+            ];
+        }
+
+        $teamLeader = $teamControl->first();
+        if ($teamLeader) {
+            $teamShare = round((float) ($teamLeader->features['team_career_points_share'] ?? 0) * 100, 0);
+            $teamChallengers = $this->scenarioChallengersText($top3, $teamLeader->rider_id);
+            $list[] = [
+                'title' => '🧩 Ploegscenario',
+                'text'  => "{$teamLeader->rider->full_name} start met een sterk ploegblok ({$teamShare}% relatieve teamsterkte in deze startlijst). "
+                    . ($teamChallengers
+                        ? "{$teamChallengers} moeten die ploegcontrole breken voor een open finale."
+                        : 'Als het peloton gesloten blijft, speelt dit voordeel nog zwaarder door.'),
+            ];
+        }
+
+        $attacker = $this->pickScenarioCandidate($attackers, $top3, $usedRiderIds);
+        if ($attacker) {
+            $attackRate = round((float) ($attacker->features['current_year_attack_momentum_rate'] ?? 0), 0);
+            $list[] = [
+                'title' => '⚡ Aanvalsscenario',
+                'text'  => "{$attacker->rider->full_name} toont dit seizoen vaak aanvalsmomentum ({$attackRate}% signaalscore). "
+                    . 'Bij een vroege selectieve move stijgt zijn winstkans relatief het meest.',
             ];
         }
 
@@ -679,6 +709,7 @@ class RaceController extends Controller
             'slug'           => $race->pcs_slug,
             'name'           => $race->name,
             'category'       => $race->category ?? ucfirst(str_replace('_', ' ', $race->race_type)),
+            'tier'           => $this->raceTier($race->category),
             'date'           => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
             'summary'        => $this->parcoursDescription($race->parcours_type),
             'terrain'        => ucfirst($race->parcours_type),
@@ -691,6 +722,29 @@ class RaceController extends Controller
             'topPick'        => $topPick,
             'topPickLabel'   => $topPickLabel,
         ];
+    }
+
+    private function raceTier(?string $category): string
+    {
+        $value = strtolower((string) $category);
+
+        if (str_contains($value, 'uwt') || str_contains($value, 'worldtour')) {
+            return 'WorldTour';
+        }
+
+        if (str_contains($value, '.pro') || str_contains($value, 'proseries')) {
+            return 'ProSeries';
+        }
+
+        if (preg_match('/(^|\s)1\./', $value) === 1) {
+            return '1.1/1.2';
+        }
+
+        if (preg_match('/(^|\s)2\./', $value) === 1) {
+            return '2.1/2.2';
+        }
+
+        return 'Overig';
     }
 
     private function parcoursDescription(string $type): string

@@ -26,6 +26,11 @@ export default function RaceList({ races = [] }) {
                                 <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-teal-700">
                                     {race.category}
                                 </span>
+                                {race.tier && (
+                                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-600">
+                                        {race.tier}
+                                    </span>
+                                )}
                                 {race.is_live && (
                                     <span className="rounded-full bg-red-50 px-2 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-red-600">
                                         Live
