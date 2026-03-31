@@ -49,15 +49,26 @@ export default function About() {
                 <section className="relative overflow-hidden rounded-[34px] border border-slate-200 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950 p-7 text-white sm:p-10">
                     <div className="absolute -right-14 -top-14 h-40 w-40 rounded-full bg-cyan-300/20 blur-2xl" />
                     <div className="absolute -left-10 bottom-0 h-32 w-32 rounded-full bg-amber-300/20 blur-2xl" />
-                    <span className="vp-pill border-white/20 bg-white/10 text-white">Over de maker</span>
-                    <h1 className="mt-4 max-w-3xl font-display text-4xl font-semibold tracking-tight sm:text-6xl">
-                        Technologie en koers, samengebracht in Velopred.
-                    </h1>
-                    <p className="mt-5 max-w-3xl text-base leading-7 text-slate-200 sm:text-lg">
-                        Mijn naam is Lowie Knaeps en ik ben student Multimedia en Creatieve Technologie in mijn derde bachelor.
-                        Binnen mijn opleiding heb ik een sterke interesse ontwikkeld in web development, interactieve toepassingen
-                        en de integratie van nieuwe technologieën zoals artificiële intelligentie.
-                    </p>
+                    <div className="grid items-center gap-8 lg:grid-cols-[1.1fr_0.9fr]">
+                        <div>
+                            <span className="vp-pill border-white/20 bg-white/10 text-white">Over de maker</span>
+                            <h1 className="mt-4 max-w-3xl font-display text-4xl font-semibold tracking-tight sm:text-6xl">
+                                Technologie en koers, samengebracht in Velopred.
+                            </h1>
+                            <p className="mt-5 max-w-3xl text-base leading-7 text-slate-200 sm:text-lg">
+                                Mijn naam is Lowie Knaeps en ik ben student Multimedia en Creatieve Technologie in mijn derde bachelor.
+                                Binnen mijn opleiding heb ik een sterke interesse ontwikkeld in web development, interactieve toepassingen
+                                en de integratie van nieuwe technologieën zoals artificiële intelligentie.
+                            </p>
+                        </div>
+                        <div className="mx-auto w-full max-w-md">
+                            <img
+                                src="/images/about/heroimage.jpg"
+                                alt="Lowie Knaeps tijdens wielerwedstrijd"
+                                className="h-[340px] w-full rounded-[26px] border border-white/20 object-cover shadow-2xl shadow-slate-950/40"
+                            />
+                        </div>
+                    </div>
                 </section>
 
                 <section className="grid gap-4 md:grid-cols-3">
