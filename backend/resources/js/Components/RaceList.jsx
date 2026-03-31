@@ -28,6 +28,16 @@ function TypeIcon({ type }) {
         );
     }
 
+    if (key === 'eendagskoers') {
+        return (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={baseClass} aria-hidden="true">
+                <path d="M4 18h16" />
+                <path d="M6 15c1.5-4.5 4-7 6-7s4.5 2.5 6 7" />
+                <circle cx="12" cy="7" r="1.5" />
+            </svg>
+        );
+    }
+
     return (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={baseClass} aria-hidden="true">
             <circle cx="12" cy="12" r="8" />
