@@ -712,7 +712,7 @@ class RaceController extends Controller
             'tier'           => $this->raceTier($race->category),
             'date'           => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
             'summary'        => $this->parcoursDescription($race->parcours_type),
-            'terrain'        => ucfirst($race->parcours_type),
+            'terrain'        => $this->terrainLabel($race->parcours_type),
             'race_type'      => $race->isOneDay() ? 'Eendagskoers' : 'Etappekoers',
             'rider_count'    => $riderCount,
             'is_finished'    => $isFinished,
@@ -756,6 +756,20 @@ class RaceController extends Controller
             'tt'       => 'Tijdrit waarbij elke renner solo rijdt en de klok de enige tegenstander is.',
             'classic'  => 'Klassieker met een mix van terrein, kasseien of hellingen die een allround kampioen vereisen.',
             default    => 'Gevarieerd parcours met meerdere terreinsoorten.',
+        };
+    }
+
+    private function terrainLabel(?string $type): string
+    {
+        return match ($type) {
+            'flat' => 'Vlak',
+            'hilly' => 'Heuvels',
+            'mountain' => 'Bergen',
+            'cobbled' => 'Kasseien',
+            'classic' => 'Klassieker',
+            'tt' => 'Tijdrit',
+            'mixed' => 'Gemengd',
+            default => ucfirst((string) $type),
         };
     }
 
