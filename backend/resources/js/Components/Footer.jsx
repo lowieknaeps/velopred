@@ -5,6 +5,7 @@ const footerLinks = [
     { label: 'Koersen', href: '/races' },
     { label: 'Renners', href: '/riders' },
     { label: 'Voorspellingen', href: '/predictions' },
+    { label: 'Over mij', href: '/over-mij' },
 ];
 
 export default function Footer() {

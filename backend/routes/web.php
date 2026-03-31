@@ -7,6 +7,7 @@ use App\Http\Controllers\RaceController;
 use App\Http\Controllers\RiderController;
 use App\Http\Controllers\WatchlistController;
 use Illuminate\Support\Facades\Route;
+use Inertia\Inertia;
 
 // Publieke routes
 Route::get('/', [HomeController::class, 'index']);
@@ -20,6 +21,7 @@ Route::get('/riders', [RiderController::class, 'index']);
 Route::get('/riders/{rider}', [RiderController::class, 'show']);
 
 Route::get('/predictions', [PredictionController::class, 'index']);
+Route::get('/over-mij', fn () => Inertia::render('About'))->name('about');
 
 // Dashboard (Breeze)
 Route::get('/dashboard', function () {
