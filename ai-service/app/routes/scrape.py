@@ -333,6 +333,7 @@ def scrape_rider(slug: str):
             "name": safe(r.name),
             "nationality": safe(r.nationality),
             "birthdate": safe(r.birthdate),
+            "photo_url": safe(r.image_url),
             "weight": safe(r.weight),
             "height": safe(r.height),
             "specialities": safe(r.points_per_speciality, {}) or {},

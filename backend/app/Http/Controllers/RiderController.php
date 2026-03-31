@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Prediction;
 use App\Models\RaceResult;
 use App\Models\Rider;
+use App\Services\ExternalCyclingApiService;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -181,6 +182,7 @@ class RiderController extends Controller
         return Inertia::render('Riders/Show', [
             'rider' => [
                 ...$this->formatRiderCard($rider),
+                'photo_url'      => $this->fetchPcsPhotoUrl($rider->pcs_slug),
                 'nationality'   => $rider->nationality,
                 'date_of_birth' => $rider->date_of_birth?->locale('nl_BE')->translatedFormat('d M Y'),
                 'age'           => $rider->age,
@@ -249,5 +251,18 @@ class RiderController extends Controller
             'youth'  => 'Jongerenklassement',
             default  => 'Uitslag',
         };
+    }
+
+    private function fetchPcsPhotoUrl(string $pcsSlug): ?string
+    {
+        try {
+            $api = new ExternalCyclingApiService();
+            $profile = $api->getRider($pcsSlug);
+            $photoUrl = $profile['photo_url'] ?? null;
+
+            return is_string($photoUrl) && trim($photoUrl) !== '' ? $photoUrl : null;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

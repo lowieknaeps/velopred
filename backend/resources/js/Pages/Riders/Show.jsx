@@ -22,6 +22,21 @@ export default function RidersShow({ rider, indicators = [], recentResults = [],
                 {/* Rider header */}
                 <section className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
                     <div className="vp-panel p-6 sm:p-8">
+                        <div className="mb-4">
+                            {rider.photo_url ? (
+                                <img
+                                    src={rider.photo_url}
+                                    alt={`Profielfoto van ${rider.name}`}
+                                    className="h-28 w-28 rounded-2xl border border-slate-200 object-cover shadow-sm"
+                                    loading="lazy"
+                                    referrerPolicy="no-referrer"
+                                />
+                            ) : (
+                                <div className="flex h-28 w-28 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-500">
+                                    Geen foto
+                                </div>
+                            )}
+                        </div>
                         <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{rider.team}</div>
                         <h1 className="mt-4 font-display text-4xl font-semibold tracking-tight text-slate-950 sm:text-5xl">
                             {rider.name}
