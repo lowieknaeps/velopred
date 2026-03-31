@@ -11,3 +11,7 @@ Voorbeeld:
 - `tadej-pogacar.webp`
 
 De app gebruikt eerst deze lokale map en valt pas daarna terug op PCS-thumbnails.
+
+Automatisch laten ophalen:
+- `php artisan photos:sync-riders --limit=40`
+- `php artisan photos:sync-riders --all --limit=120`
