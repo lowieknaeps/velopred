@@ -220,6 +220,8 @@ class RaceController extends Controller
             ->orderBy('year', 'desc')
             ->firstOrFail();
         $latestPredictionAt = $this->asCarbon($race->predictions()->max('updated_at'));
+        $primaryContext = $this->primaryPredictionContext($race);
+        $baselineSnapshot = $this->buildTopPredictionSnapshot($race, $primaryContext);
         $startedAt = now();
         $token = (string) Str::uuid();
         $lockFile = "/tmp/velopred-rerun-{$race->id}-{$token}.lock";
@@ -230,6 +232,8 @@ class RaceController extends Controller
             'status' => 'running',
             'started_at' => $startedAt->toIso8601String(),
             'baseline_prediction_updated_at' => $latestPredictionAt?->toIso8601String(),
+            'baseline_context' => $primaryContext,
+            'baseline_snapshot' => $baselineSnapshot,
             'run_token' => $token,
             'lock_file' => $lockFile,
             'done_file' => $doneFile,
@@ -353,6 +357,7 @@ class RaceController extends Controller
             'running' => $this->estimateRunningProgressPercent($startedAt),
             default => 0,
         };
+        $changeSummary = $this->buildRerunChangeSummary($race, $state);
 
         return response()->json([
             'status' => $state['status'] ?? 'idle',
@@ -360,6 +365,7 @@ class RaceController extends Controller
             'latest_prediction_updated_at' => $this->formatTimestamp($latestPredictionAt),
             'started_at' => isset($state['started_at']) ? $this->formatTimestamp(Carbon::parse($state['started_at'])) : null,
             'completed_at' => isset($state['completed_at']) ? $this->formatTimestamp(Carbon::parse($state['completed_at'])) : null,
+            'change_summary' => $changeSummary,
         ]);
     }
 
@@ -391,6 +397,89 @@ class RaceController extends Controller
         $ratio = min(1, $elapsedSeconds / self::RERUN_EXPECTED_SECONDS);
 
         return (int) max(5, min(95, round($ratio * 95)));
+    }
+
+    private function buildTopPredictionSnapshot(Race $race, array $context): array
+    {
+        return $race->predictions()
+            ->where('prediction_type', $context['prediction_type'])
+            ->where('stage_number', (int) $context['stage_number'])
+            ->orderBy('predicted_position')
+            ->with('rider:id,pcs_slug,first_name,last_name')
+            ->limit(10)
+            ->get()
+            ->map(function ($prediction) {
+                return [
+                    'rider_slug' => $prediction->rider->pcs_slug,
+                    'rider' => $prediction->rider->full_name,
+                    'position' => (int) $prediction->predicted_position,
+                    'win_probability' => round((float) $prediction->win_probability * 100, 1),
+                ];
+            })
+            ->all();
+    }
+
+    private function buildRerunChangeSummary(Race $race, array $state): ?array
+    {
+        $baselineSnapshot = collect($state['baseline_snapshot'] ?? []);
+        $context = $state['baseline_context'] ?? $this->primaryPredictionContext($race);
+
+        if ($baselineSnapshot->isEmpty()) {
+            return null;
+        }
+
+        $currentSnapshot = collect($this->buildTopPredictionSnapshot($race, $context));
+        if ($currentSnapshot->isEmpty()) {
+            return null;
+        }
+
+        $baselineBySlug = $baselineSnapshot->keyBy('rider_slug');
+        $currentBySlug = $currentSnapshot->keyBy('rider_slug');
+
+        $overlapSlugs = $currentBySlug->keys()->intersect($baselineBySlug->keys())->values();
+        $top10Overlap = $overlapSlugs->count();
+        $exactPositions = $overlapSlugs
+            ->filter(fn ($slug) => (int) ($currentBySlug[$slug]['position'] ?? 0) === (int) ($baselineBySlug[$slug]['position'] ?? -1))
+            ->count();
+        $newEntries = $currentBySlug->keys()->diff($baselineBySlug->keys())->count();
+        $droppedEntries = $baselineBySlug->keys()->diff($currentBySlug->keys())->count();
+
+        $movers = $overlapSlugs
+            ->map(function ($slug) use ($baselineBySlug, $currentBySlug) {
+                $oldPosition = (int) ($baselineBySlug[$slug]['position'] ?? 0);
+                $newPosition = (int) ($currentBySlug[$slug]['position'] ?? 0);
+                $delta = $oldPosition - $newPosition;
+
+                return [
+                    'rider' => $currentBySlug[$slug]['rider'] ?? $baselineBySlug[$slug]['rider'] ?? $slug,
+                    'delta' => $delta,
+                    'old_position' => $oldPosition,
+                    'new_position' => $newPosition,
+                ];
+            })
+            ->filter(fn (array $entry) => $entry['delta'] !== 0)
+            ->sortByDesc(fn (array $entry) => abs($entry['delta']))
+            ->values();
+
+        $winProbabilityShifts = $overlapSlugs
+            ->filter(function ($slug) use ($baselineBySlug, $currentBySlug) {
+                $oldWin = (float) ($baselineBySlug[$slug]['win_probability'] ?? 0.0);
+                $newWin = (float) ($currentBySlug[$slug]['win_probability'] ?? 0.0);
+
+                return abs($newWin - $oldWin) >= 0.2;
+            })
+            ->count();
+
+        return [
+            'top10_overlap' => $top10Overlap,
+            'exact_positions' => $exactPositions,
+            'new_entries' => $newEntries,
+            'dropped_entries' => $droppedEntries,
+            'win_probability_shifts' => $winProbabilityShifts,
+            'movers' => $movers->take(3)->all(),
+            'has_changes' => $exactPositions < 10 || $newEntries > 0 || $droppedEntries > 0 || $winProbabilityShifts > 0,
+            'current_snapshot' => $currentSnapshot->all(),
+        ];
     }
 
     private function buildScenarios(Race $race, $predictions): array
@@ -618,7 +707,7 @@ class RaceController extends Controller
 
     private function formatTimestamp($value): ?string
     {
-        return $value?->copy()->locale('nl_BE')->translatedFormat('d M H:i');
+        return $value?->copy()->timezone('Europe/Brussels')->locale('nl_BE')->translatedFormat('d M H:i');
     }
 
     private function primaryPredictionContext(Race $race): array

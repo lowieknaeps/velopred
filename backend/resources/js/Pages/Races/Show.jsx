@@ -17,8 +17,8 @@ export default function RacesShow({
     const { post, processing } = useForm({});
     const [rerunStatus, setRerunStatus] = useState('idle');
     const [rerunProgress, setRerunProgress] = useState(0);
+    const [rerunChangeSummary, setRerunChangeSummary] = useState(null);
     const [showRerunFeedback, setShowRerunFeedback] = useState(false);
-    const hasAutoReloaded = useRef(false);
     const previousRerunStatus = useRef('idle');
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
@@ -26,8 +26,8 @@ export default function RacesShow({
     const rerunModel = () => {
         setRerunStatus('idle');
         setRerunProgress(0);
+        setRerunChangeSummary(null);
         setShowRerunFeedback(true);
-        hasAutoReloaded.current = false;
         post(`/races/${race.slug}/rerun-model`, {
             preserveScroll: true,
             onSuccess: () => {
@@ -54,6 +54,7 @@ export default function RacesShow({
                 const status = data?.status ?? 'idle';
                 setRerunStatus(status);
                 setRerunProgress(Number(data?.progress_percent ?? 0));
+                setRerunChangeSummary(data?.change_summary ?? null);
 
                 if (status === 'running') {
                     // Ook na een manuele refresh moet lopende run zichtbaar blijven.
@@ -92,16 +93,9 @@ export default function RacesShow({
             return;
         }
 
-        if (rerunStatus !== 'completed' || !wasRunning || hasAutoReloaded.current) {
-            return;
+        if ((rerunStatus === 'completed' || rerunStatus === 'failed') && wasRunning) {
+            setShowRerunFeedback(true);
         }
-
-        hasAutoReloaded.current = true;
-        const timeout = window.setTimeout(() => {
-            window.location.reload();
-        }, 700);
-
-        return () => window.clearTimeout(timeout);
     }, [rerunStatus]);
 
     return (
@@ -172,7 +166,7 @@ export default function RacesShow({
                                             }`}
                                         >
                                             {rerunStatus === 'completed'
-                                                ? 'Herberekening klaar. Nieuwe voorspellingen worden geladen...'
+                                                ? 'Herberekening klaar. Wijzigingen hieronder zichtbaar.'
                                                 : rerunStatus === 'failed'
                                                   ? 'Herberekening duurde te lang. Probeer opnieuw.'
                                                   : 'Model wordt opnieuw berekend...'}
@@ -191,6 +185,27 @@ export default function RacesShow({
                                             style={{ width: `${Math.max(0, Math.min(100, rerunProgress))}%` }}
                                         />
                                     </div>
+                                    {rerunStatus === 'completed' && rerunChangeSummary && (
+                                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/80 p-3 text-xs text-emerald-900">
+                                            <div className="font-semibold">
+                                                Top-10 overlap: {rerunChangeSummary.top10_overlap}/10 · Exacte posities: {rerunChangeSummary.exact_positions}/10
+                                            </div>
+                                            <div className="mt-1">
+                                                Nieuwe namen: {rerunChangeSummary.new_entries} · Weggevallen: {rerunChangeSummary.dropped_entries} · Winkans shifts: {rerunChangeSummary.win_probability_shifts}
+                                            </div>
+                                            {Array.isArray(rerunChangeSummary.movers) && rerunChangeSummary.movers.length > 0 && (
+                                                <div className="mt-1">
+                                                    Grootste verschuivingen:{' '}
+                                                    {rerunChangeSummary.movers
+                                                        .map(
+                                                            (item) =>
+                                                                `${item.rider} ${item.delta > 0 ? `+${item.delta}` : item.delta}`
+                                                        )
+                                                        .join(', ')}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>

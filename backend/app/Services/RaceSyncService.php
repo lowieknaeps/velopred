@@ -100,7 +100,7 @@ class RaceSyncService
 
         $currentRiderIds = [];
 
-        foreach ($data['riders'] as $entry) {
+        foreach ($data['riders'] as $index => $entry) {
             $rider = $this->riderSync->syncFromStartlistEntry($entry);
             $team  = Team::where('pcs_slug', $entry['team_slug'])->first();
             $currentRiderIds[] = $rider->id;
@@ -111,6 +111,7 @@ class RaceSyncService
                 [
                     'team_id'    => $team?->id,
                     'bib_number' => $entry['rider_number'] ?? null,
+                    'startlist_order' => $index + 1,
                 ]
             );
         }

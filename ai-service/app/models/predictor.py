@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v19"
+MODEL_VERSION = "v20"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -97,6 +97,8 @@ BASE_FEATURE_COLS = [
     "form_trend",               # recent vs. historisch
     "recent_avg_position",      # laatste 5 resultaten
     "recent_top10_rate",        # top-10 rate in laatste 5 resultaten
+    "top10_last_10_rate",       # top-10 rate over laatste 10 uitslagen
+    "recency_weighted_avg_position_10", # recency-weighted gem. positie laatste 10
     "avg_position_this_race",   # historisch gem. op déze koers
     "best_result_this_race",    # beste resultaat op déze koers
     "wins_this_race",           # aantal zeges op déze koers
@@ -131,6 +133,9 @@ BASE_FEATURE_COLS = [
     "race_specificity_ratio",   # hoe groot is de specialisatie op déze koers
     "manual_incident_penalty",  # handmatige val/blessure-penalty met decay
     "manual_incident_days_ago", # aantal dagen sinds handmatig incident
+    "team_startlist_size",      # aantal ploeggenoten op startlijst
+    "team_career_points_total", # totale teamsterkte op basis van career points
+    "team_career_points_share", # teamsterkte t.o.v. sterkste team in veld
     "career_points",            # algemene carrièreniveau-indicator
     "pcs_ranking",              # huidige PCS ranking
     "uci_ranking",              # huidige UCI ranking
@@ -169,6 +174,8 @@ SPECIALIST_FEATURE_COLS = [
     "form_trend",
     "recent_avg_position",
     "recent_top10_rate",
+    "top10_last_10_rate",
+    "recency_weighted_avg_position_10",
     "avg_position_this_race",
     "best_result_this_race",
     "wins_this_race",
@@ -203,6 +210,9 @@ SPECIALIST_FEATURE_COLS = [
     "race_specificity_ratio",
     "manual_incident_penalty",
     "manual_incident_days_ago",
+    "team_startlist_size",
+    "team_career_points_total",
+    "team_career_points_share",
     "career_points",
     "pcs_ranking",
     "uci_ranking",
@@ -267,6 +277,8 @@ DEFAULT_FEATURE_VALUES = {
     "form_trend": 0.0,
     "recent_avg_position": 25.0,
     "recent_top10_rate": 0.0,
+    "top10_last_10_rate": 0.0,
+    "recency_weighted_avg_position_10": 25.0,
     "avg_position_this_race": 25.0,
     "best_result_this_race": 25.0,
     "wins_this_race": 0.0,
@@ -301,6 +313,9 @@ DEFAULT_FEATURE_VALUES = {
     "race_specificity_ratio": 1.0,
     "manual_incident_penalty": 0.0,
     "manual_incident_days_ago": 999.0,
+    "team_startlist_size": 1.0,
+    "team_career_points_total": 0.0,
+    "team_career_points_share": 0.0,
     "career_points": 0.0,
     "pcs_ranking": 250.0,
     "uci_ranking": 250.0,

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Prediction;
 use App\Models\Race;
+use App\Models\RaceEntry;
 use App\Models\Rider;
 use App\Models\RaceResult;
 use Illuminate\Support\Collection;
@@ -23,6 +24,7 @@ class PredictionService
     const MIN_PRIOR          = 3;
     private array $pcsSeasonSignalsCache = [];
     private array $topCompetitorCache = [];
+    private array $raceTeamSignalsCache = [];
 
     public function __construct(
         private ExternalCyclingApiService $api,
@@ -94,6 +96,13 @@ class PredictionService
 
             $slugToId = Rider::whereIn('pcs_slug', collect($predictions)->pluck('rider_slug'))
                 ->pluck('id', 'pcs_slug');
+            $predictions = $this->applyTeamHierarchyAdjustments(
+                $predictions,
+                $race,
+                $slugToId,
+                $featuresBySlug,
+                $context['prediction_type'],
+            );
             $savedRiderIds = [];
 
             DB::transaction(function () use (
@@ -240,6 +249,7 @@ class PredictionService
         $pcsTopCompetitor = $this->topCompetitorMetadata($race, $rider->pcs_slug);
         $pcsSeasonSignals = $this->pcsSeasonSignals($rider, $race, $pcsTopCompetitor);
         $manualIncident = $this->manualIncidentSignal($rider->pcs_slug, $race->start_date);
+        $teamSignals = $this->raceTeamSignals($race, $rider);
         $currentRaceResults = $race->isOneDay()
             ? collect()
             : RaceResult::where('race_id', $race->id)
@@ -274,6 +284,7 @@ class PredictionService
             ->join('races', 'race_results.race_id', '=', 'races.id')
             ->where('races.start_date', '<', $raceDate)
             ->where('races.year', '>=', self::MIN_YEAR)
+            ->orderBy('races.start_date', 'asc')
             ->select(
                 'race_results.race_id',
                 'race_results.position',
@@ -281,6 +292,7 @@ class PredictionService
                 'race_results.result_type',
                 'race_results.stage_number',
                 'races.year as race_year',
+                'races.start_date as race_start_date',
                 'races.parcours_type',
                 'races.pcs_slug as race_slug',
                 'races.stages_json'
@@ -351,6 +363,8 @@ class PredictionService
                 'uci_ranking'             => $rider->uci_ranking,
                 'recent_avg_position'     => null,
                 'recent_top10_rate'       => null,
+                'top10_last_10_rate'      => null,
+                'recency_weighted_avg_position_10' => null,
                 'avg_position_this_race'  => null,
                 'best_result_this_race'   => null,
                 'wins_this_race'          => 0,
@@ -398,6 +412,9 @@ class PredictionService
                 'pcs_last_incident_days_ago' => $pcsSeasonSignals['last_incident_days_ago'],
                 'pcs_comeback_finished_count' => $pcsSeasonSignals['comeback_finished_count'],
                 'pcs_days_since_last_result' => $pcsSeasonSignals['days_since_last_result'],
+                'team_startlist_size' => $teamSignals['team_startlist_size'],
+                'team_career_points_total' => $teamSignals['team_career_points_total'],
+                'team_career_points_share' => $teamSignals['team_career_points_share'],
                 'manual_incident_penalty' => $manualIncident['penalty'],
                 'manual_incident_days_ago' => $manualIncident['days_ago'],
                 'live_stage_results_count' => $liveStageResultsCount,
@@ -443,6 +460,16 @@ class PredictionService
         $recent    = $contextPrior->take(-5);
         $recentAvg = $recent->isNotEmpty() ? $recent->avg('position') : $avgPos;
         $formTrend = $recentAvg - $avgPos;
+        $last10 = $contextPrior->take(-10)->values();
+        $top10Last10Rate = $last10->isNotEmpty()
+            ? $last10->filter(fn($r) => $r->position <= 10)->count() / $last10->count() * 100
+            : $top10Rate;
+        $last10Weights = collect(range(1, max(1, $last10->count())));
+        $recencyWeightedAvgPosition10 = $last10->isNotEmpty()
+            ? $last10->zip($last10Weights)
+                ->map(fn($pair) => $pair[0]->position * $pair[1])
+                ->sum() / max(1, $last10Weights->sum())
+            : $avgPos;
         $recentTop10Rate = $recent->isNotEmpty()
             ? $recent->filter(fn($r) => $r->position <= 10)->count() / $recent->count() * 100
             : $top10Rate;
@@ -638,6 +665,8 @@ class PredictionService
             'form_trend'              => round($formTrend, 2),
             'recent_avg_position'     => round($recentAvg, 2),
             'recent_top10_rate'       => round($recentTop10Rate, 2),
+            'top10_last_10_rate'      => round($top10Last10Rate, 2),
+            'recency_weighted_avg_position_10' => round($recencyWeightedAvgPosition10, 2),
             'avg_position_this_race'  => round($avgThisRace, 2),
             'best_result_this_race'   => $bestResultThisRace,
             'wins_this_race'          => $winsThisRace,
@@ -685,6 +714,9 @@ class PredictionService
             'pcs_last_incident_days_ago' => $pcsSeasonSignals['last_incident_days_ago'],
             'pcs_comeback_finished_count' => $pcsSeasonSignals['comeback_finished_count'],
             'pcs_days_since_last_result' => $pcsSeasonSignals['days_since_last_result'],
+            'team_startlist_size' => $teamSignals['team_startlist_size'],
+            'team_career_points_total' => $teamSignals['team_career_points_total'],
+            'team_career_points_share' => $teamSignals['team_career_points_share'],
             'manual_incident_penalty' => $manualIncident['penalty'],
             'manual_incident_days_ago' => $manualIncident['days_ago'],
             'live_stage_results_count' => $liveStageResultsCount,
@@ -1853,5 +1885,242 @@ class PredictionService
         }
 
         return ['penalty' => $penalty, 'days_ago' => $daysAgo];
+    }
+
+    private function applyTeamHierarchyAdjustments(
+        array $predictions,
+        Race $race,
+        Collection $slugToId,
+        array $featuresBySlug,
+        string $predictionType
+    ): array {
+        if ($predictionType !== 'result' || count($predictions) < 2 || $slugToId->isEmpty()) {
+            return $predictions;
+        }
+
+        $ridersBySlug = Rider::query()
+            ->whereIn('id', $slugToId->values()->all())
+            ->select('id', 'pcs_slug', 'team_id')
+            ->get()
+            ->keyBy('pcs_slug');
+        $startlistOrdersByRiderId = RaceEntry::query()
+            ->where('race_id', $race->id)
+            ->whereIn('rider_id', $slugToId->values()->all())
+            ->pluck('startlist_order', 'rider_id');
+
+        $teamBuckets = [];
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            if ($slug === '' || !isset($ridersBySlug[$slug])) {
+                continue;
+            }
+
+            $teamId = $ridersBySlug[$slug]->team_id;
+            if (!$teamId) {
+                continue;
+            }
+
+            $features = $featuresBySlug[$slug] ?? [];
+            $riderId = (int) ($slugToId[$slug] ?? 0);
+            $startlistOrder = $riderId > 0 ? $startlistOrdersByRiderId->get($riderId) : null;
+            $teamBuckets[$teamId][] = [
+                'index' => $index,
+                'slug' => $slug,
+                'startlist_order' => is_numeric($startlistOrder) ? (int) $startlistOrder : null,
+                'leader_score' => $this->intraTeamLeaderScore($features),
+            ];
+        }
+
+        foreach ($teamBuckets as $members) {
+            if (count($members) < 2) {
+                continue;
+            }
+
+            usort($members, function (array $a, array $b) use ($predictions) {
+                $aOrder = $a['startlist_order'] ?? null;
+                $bOrder = $b['startlist_order'] ?? null;
+                $aHasOrder = is_int($aOrder) && $aOrder > 0;
+                $bHasOrder = is_int($bOrder) && $bOrder > 0;
+
+                if ($aHasOrder && $bHasOrder && $aOrder !== $bOrder) {
+                    return $aOrder <=> $bOrder;
+                }
+
+                if ($aHasOrder !== $bHasOrder) {
+                    return $aHasOrder ? -1 : 1;
+                }
+
+                $scoreCmp = $b['leader_score'] <=> $a['leader_score'];
+                if ($scoreCmp !== 0) {
+                    return $scoreCmp;
+                }
+
+                $aWin = (float) ($predictions[$a['index']]['win_probability'] ?? 0.0);
+                $bWin = (float) ($predictions[$b['index']]['win_probability'] ?? 0.0);
+
+                return $bWin <=> $aWin;
+            });
+
+            $leader = $members[0];
+            $leaderIdx = $leader['index'];
+
+            foreach (array_slice($members, 1) as $member) {
+                $memberIdx = $member['index'];
+                $gap = $leader['leader_score'] - $member['leader_score'];
+                $leaderOrder = $leader['startlist_order'] ?? null;
+                $memberOrder = $member['startlist_order'] ?? null;
+                $orderGap = (is_int($leaderOrder) && is_int($memberOrder)) ? ($memberOrder - $leaderOrder) : 0;
+                $hasOrderPriority = $orderGap >= 1;
+
+                if (!$hasOrderPriority && $gap < 0.10) {
+                    continue;
+                }
+
+                $leaderWin = (float) ($predictions[$leaderIdx]['win_probability'] ?? 0.0);
+                $memberWin = (float) ($predictions[$memberIdx]['win_probability'] ?? 0.0);
+                $leaderPos = (int) ($predictions[$leaderIdx]['predicted_position'] ?? 999);
+                $memberPos = (int) ($predictions[$memberIdx]['predicted_position'] ?? 999);
+
+                $memberAhead = $memberPos < $leaderPos || $memberWin > ($leaderWin * 1.03);
+                if (!$memberAhead) {
+                    continue;
+                }
+
+                $orderBoost = $hasOrderPriority ? min(0.14, max(0.04, $orderGap * 0.02)) : 0.0;
+                $penaltyFactor = max(0.62, min(0.92, 1 - ($gap * 0.35) - $orderBoost));
+                $newMemberWin = max(0.0, min(1.0, $memberWin * $penaltyFactor));
+                $winTransfer = max(0.0, ($memberWin - $newMemberWin) * 0.8);
+                $newLeaderWin = max(0.0, min(1.0, $leaderWin + $winTransfer));
+
+                $memberTop10 = (float) ($predictions[$memberIdx]['top10_probability'] ?? 0.0);
+                $leaderTop10 = (float) ($predictions[$leaderIdx]['top10_probability'] ?? 0.0);
+                $newMemberTop10 = max(0.0, min(1.0, $memberTop10 * min(0.96, $penaltyFactor + 0.05)));
+                $newLeaderTop10 = max(0.0, min(1.0, $leaderTop10 + max(0.0, ($memberTop10 - $newMemberTop10) * 0.5)));
+
+                $predictions[$memberIdx]['win_probability'] = $newMemberWin;
+                $predictions[$memberIdx]['top10_probability'] = $newMemberTop10;
+                $predictions[$leaderIdx]['win_probability'] = $newLeaderWin;
+                $predictions[$leaderIdx]['top10_probability'] = $newLeaderTop10;
+
+                $leader['leader_score'] = max($leader['leader_score'], $member['leader_score'] + 0.01);
+            }
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            $aConfidence = (float) ($a['confidence_score'] ?? 0.0);
+            $bConfidence = (float) ($b['confidence_score'] ?? 0.0);
+            if ($aConfidence !== $bConfidence) {
+                return $bConfidence <=> $aConfidence;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        return $predictions;
+    }
+
+    private function intraTeamLeaderScore(array $features): float
+    {
+        $career = (float) ($features['field_pct_career_points'] ?? 0.5);
+        $pcs = (float) ($features['field_pct_pcs_ranking'] ?? 0.5);
+        $recent = (float) ($features['field_pct_recent_form'] ?? 0.5);
+        $season = (float) ($features['field_pct_season_form'] ?? 0.5);
+        $course = (float) ($features['field_pct_course_fit'] ?? 0.5);
+        $top10 = (float) ($features['field_pct_top10_rate'] ?? 0.5);
+        $dominance = min(1.0, max(0.0, (float) ($features['season_dominance_score'] ?? 50.0) / 100.0));
+
+        return (
+            $career * 0.24 +
+            $pcs * 0.16 +
+            $recent * 0.20 +
+            $season * 0.18 +
+            $course * 0.10 +
+            $top10 * 0.05 +
+            $dominance * 0.07
+        );
+    }
+
+    private function raceTeamSignals(Race $race, Rider $rider): array
+    {
+        $default = [
+            'team_startlist_size' => 1,
+            'team_career_points_total' => (float) ($rider->career_points ?? 0.0),
+            'team_career_points_share' => 0.0,
+        ];
+
+        $team = trim((string) ($rider->team ?? ''));
+        if ($team === '') {
+            return $default;
+        }
+
+        $cacheKey = "{$race->id}:{$race->year}";
+
+        if (!array_key_exists($cacheKey, $this->raceTeamSignalsCache)) {
+            $entries = $race->entries()
+                ->with(['rider:id,team,career_points'])
+                ->get();
+
+            $teamBuckets = [];
+            foreach ($entries as $entry) {
+                if (!$entry->rider) {
+                    continue;
+                }
+
+                $entryTeam = trim((string) ($entry->rider->team ?? ''));
+                if ($entryTeam === '') {
+                    continue;
+                }
+
+                if (!array_key_exists($entryTeam, $teamBuckets)) {
+                    $teamBuckets[$entryTeam] = [
+                        'team_startlist_size' => 0,
+                        'team_career_points_total' => 0.0,
+                    ];
+                }
+
+                $teamBuckets[$entryTeam]['team_startlist_size']++;
+                $teamBuckets[$entryTeam]['team_career_points_total'] += max(0.0, (float) ($entry->rider->career_points ?? 0.0));
+            }
+
+            $maxTeamPoints = collect($teamBuckets)
+                ->map(fn (array $signals) => (float) $signals['team_career_points_total'])
+                ->max() ?? 0.0;
+
+            foreach ($teamBuckets as $teamName => $signals) {
+                $teamPoints = (float) $signals['team_career_points_total'];
+                $teamBuckets[$teamName]['team_career_points_share'] = $maxTeamPoints > 0
+                    ? round($teamPoints / $maxTeamPoints, 4)
+                    : 0.0;
+            }
+
+            $this->raceTeamSignalsCache[$cacheKey] = $teamBuckets;
+        }
+
+        $signals = $this->raceTeamSignalsCache[$cacheKey][$team] ?? null;
+        if (!is_array($signals)) {
+            return $default;
+        }
+
+        return [
+            'team_startlist_size' => max(1, (int) ($signals['team_startlist_size'] ?? 1)),
+            'team_career_points_total' => round((float) ($signals['team_career_points_total'] ?? 0.0), 2),
+            'team_career_points_share' => round((float) ($signals['team_career_points_share'] ?? 0.0), 4),
+        ];
     }
 }

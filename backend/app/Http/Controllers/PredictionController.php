@@ -401,6 +401,6 @@ class PredictionController extends Controller
 
     private function formatTimestamp($value): ?string
     {
-        return $value?->copy()->locale('nl_BE')->translatedFormat('d M H:i');
+        return $value?->copy()->timezone('Europe/Brussels')->locale('nl_BE')->translatedFormat('d M H:i');
     }
 }
