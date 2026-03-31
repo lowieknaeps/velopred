@@ -255,18 +255,13 @@ class RiderController extends Controller
 
     private function fetchPcsPhotoUrl(string $pcsSlug): ?string
     {
-        $localPhotoUrl = $this->localPhotoUrl($pcsSlug);
-        if ($localPhotoUrl !== null) {
-            return $localPhotoUrl;
-        }
-
         try {
             $api = new ExternalCyclingApiService();
             $profile = $api->getRider($pcsSlug);
             $photoUrl = $profile['photo_url'] ?? null;
 
             if (!is_string($photoUrl) || trim($photoUrl) === '') {
-                return null;
+                return $this->localPhotoUrl($pcsSlug);
             }
 
             $photoUrl = trim($photoUrl);
@@ -277,7 +272,7 @@ class RiderController extends Controller
             $normalizedPath = ltrim($photoUrl, '/');
             return "https://www.procyclingstats.com/{$normalizedPath}";
         } catch (\Throwable) {
-            return null;
+            return $this->localPhotoUrl($pcsSlug);
         }
     }
 
