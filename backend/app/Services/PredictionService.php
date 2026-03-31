@@ -2004,6 +2004,39 @@ class PredictionService
 
                 $leader['leader_score'] = max($leader['leader_score'], $member['leader_score'] + 0.01);
             }
+
+            // Harde PCS-kopmanprioriteit: binnen een ploeg moet de vroegst
+            // geplaatste startlijstrenner niet achter zijn ploegmaat blijven hangen.
+            $orderedMembers = collect($members)
+                ->filter(fn (array $member) => is_int($member['startlist_order'] ?? null) && (int) $member['startlist_order'] > 0)
+                ->sortBy('startlist_order')
+                ->values()
+                ->all();
+
+            for ($i = 1; $i < count($orderedMembers); $i++) {
+                $leaderIdx = $orderedMembers[$i - 1]['index'];
+                $followerIdx = $orderedMembers[$i]['index'];
+
+                $leaderWin = (float) ($predictions[$leaderIdx]['win_probability'] ?? 0.0);
+                $followerWin = (float) ($predictions[$followerIdx]['win_probability'] ?? 0.0);
+
+                // Max 1.5% marge voor de eerstvolgende ploegmaat.
+                $maxFollowerWin = max(0.0, $leaderWin * 0.985);
+                if ($followerWin > $maxFollowerWin) {
+                    $reduction = $followerWin - $maxFollowerWin;
+                    $predictions[$followerIdx]['win_probability'] = $maxFollowerWin;
+                    $predictions[$leaderIdx]['win_probability'] = min(1.0, max(0.0, $leaderWin + ($reduction * 0.8)));
+                }
+
+                $leaderTop10 = (float) ($predictions[$leaderIdx]['top10_probability'] ?? 0.0);
+                $followerTop10 = (float) ($predictions[$followerIdx]['top10_probability'] ?? 0.0);
+                $maxFollowerTop10 = max(0.0, $leaderTop10 * 0.99);
+                if ($followerTop10 > $maxFollowerTop10) {
+                    $top10Reduction = $followerTop10 - $maxFollowerTop10;
+                    $predictions[$followerIdx]['top10_probability'] = $maxFollowerTop10;
+                    $predictions[$leaderIdx]['top10_probability'] = min(1.0, max(0.0, $leaderTop10 + ($top10Reduction * 0.6)));
+                }
+            }
         }
 
         usort($predictions, function (array $a, array $b) {
