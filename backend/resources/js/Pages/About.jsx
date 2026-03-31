@@ -131,7 +131,7 @@ export default function About() {
                             <img
                                 src="/images/about/young.jpg"
                                 alt="Lowie Knaeps als jonge renner"
-                                className="h-[290px] w-full object-cover"
+                                className="h-[290px] w-full object-cover object-[center_22%]"
                             />
                             <div className="p-4">
                                 <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Beginjaren</div>
