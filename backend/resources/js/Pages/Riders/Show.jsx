@@ -24,15 +24,17 @@ export default function RidersShow({ rider, indicators = [], recentResults = [],
                     <div className="vp-panel p-6 sm:p-8">
                         <div className="mb-4">
                             {rider.photo_url ? (
-                                <img
-                                    src={rider.photo_url}
-                                    alt={`Profielfoto van ${rider.name}`}
-                                    className="h-28 w-28 rounded-2xl border border-slate-200 object-cover shadow-sm"
-                                    loading="lazy"
-                                    referrerPolicy="no-referrer"
-                                />
+                                <div className="h-44 w-32 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm">
+                                    <img
+                                        src={rider.photo_url}
+                                        alt={`Profielfoto van ${rider.name}`}
+                                        className="h-full w-full object-contain object-top"
+                                        loading="lazy"
+                                        referrerPolicy="no-referrer"
+                                    />
+                                </div>
                             ) : (
-                                <div className="flex h-28 w-28 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-500">
+                                <div className="flex h-44 w-32 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-500">
                                     Geen foto
                                 </div>
                             )}
