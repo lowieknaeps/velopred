@@ -2170,12 +2170,12 @@ class PredictionService
         if (
             $predictionType !== 'result'
             || !$race->isOneDay()
-            || !in_array($race->parcours_type, ['cobbled', 'classic', 'hilly'], true)
             || count($predictions) < 2
         ) {
             return $predictions;
         }
 
+        $isClassicLike = in_array($race->parcours_type, ['cobbled', 'classic', 'hilly'], true);
         $updated = false;
 
         foreach ($predictions as $index => $prediction) {
@@ -2211,6 +2211,7 @@ class PredictionService
 
             $coreContender = $careerPct >= 0.90 && ($momentum >= 0.45 || $scenario >= 0.45 || $freshPodiumSignal);
             $eliteFallbackContender = $careerPct >= 0.97 && $seasonDom >= 0.62 && $recentPct >= 0.58;
+            $eliteGeneralistContender = $careerPct >= 0.985 && $recentPct >= 0.60 && $seasonDom >= 0.60;
 
             if ($coreContender || $eliteFallbackContender) {
                 $boostFactor = 1.0
@@ -2253,10 +2254,31 @@ class PredictionService
                 $boostFactor = 1.0 + ($momentum * 0.06) + ($scenario * 0.03);
             }
 
+            if ($eliteGeneralistContender) {
+                // Elite all-rounders should remain explicit contenders across one-day races.
+                $boostFactor += 0.22
+                    + max(0.0, ($careerPct - 0.985)) * 2.0
+                    + max(0.0, ($recentPct - 0.60)) * 0.45;
+
+                if ($isClassicLike) {
+                    $boostFactor += 0.10;
+                }
+            }
+
             $currentWin = (float) ($prediction['win_probability'] ?? 0.0);
             $currentTop10 = (float) ($prediction['top10_probability'] ?? 0.0);
             $newWin = max(0.0, min(1.0, $currentWin * $boostFactor));
             $newTop10 = max(0.0, min(0.98, $currentTop10 * (1.0 + (($boostFactor - 1.0) * 0.45))));
+
+            if ($eliteFallbackContender) {
+                $eliteFloor = 0.055 + max(0.0, ($careerPct - 0.97)) * 0.22 + max(0.0, ($recentPct - 0.58)) * 0.08;
+                $newWin = max($newWin, min(0.13, $eliteFloor));
+            }
+            if ($eliteGeneralistContender) {
+                $generalistFloor = 0.09 + max(0.0, ($careerPct - 0.985)) * 0.40 + max(0.0, ($recentPct - 0.60)) * 0.12;
+                $newWin = max($newWin, min(0.16, $generalistFloor));
+                $newTop10 = max($newTop10, min(0.92, 0.52 + max(0.0, ($recentPct - 0.60)) * 0.5));
+            }
 
             if (abs($newWin - $currentWin) > 0.0001 || abs($newTop10 - $currentTop10) > 0.0001) {
                 $predictions[$index]['win_probability'] = $newWin;

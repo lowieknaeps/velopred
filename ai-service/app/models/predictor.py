@@ -1197,6 +1197,9 @@ class VelopredPredictor:
         speciality_sprint_pct = self._percentile_scores([r.get("pcs_speciality_sprint") for r in riders], inverse=False)
         speciality_climb_pct = self._percentile_scores([r.get("pcs_speciality_climber") for r in riders], inverse=False)
         speciality_hills_pct = self._percentile_scores([r.get("pcs_speciality_hills") for r in riders], inverse=False)
+        career_points_pct = self._percentile_scores([r.get("career_points") for r in riders], inverse=False)
+        pcs_ranking_pct = self._percentile_scores([r.get("pcs_ranking") for r in riders], inverse=True)
+        uci_ranking_pct = self._percentile_scores([r.get("uci_ranking") for r in riders], inverse=True)
         pcs_top_rank_pct = self._percentile_scores([r.get("pcs_top_competitor_rank") for r in riders], inverse=True, default=0.0)
         pcs_top_points_pct = self._percentile_scores([r.get("pcs_top_competitor_points") for r in riders], inverse=False, default=0.0)
         pcs_top_rankings_pct = self._percentile_scores([r.get("pcs_top_competitor_pcs_ranking") for r in riders], inverse=True, default=0.0)
@@ -1515,7 +1518,7 @@ class VelopredPredictor:
                 kom_recent_bonus += 0.0 if recent_avg_parcours in (None, "") else max(0.0, 18.0 - float(recent_avg_parcours)) * 0.32
                 context_bonus += kom_speciality_fit * 8.5 + kom_recent_bonus
 
-            if prediction_type == "result":
+            else:
                 pcs_top_rank = rider.get("pcs_top_competitor_rank")
                 pcs_last_incident_days = rider.get("pcs_last_incident_days_ago")
                 pcs_recent_nonfinish_count = float(rider.get("pcs_recent_nonfinish_count_90d", 0) or 0)
@@ -1545,6 +1548,20 @@ class VelopredPredictor:
 
                 if group in {"cobbled", "classic", "hilly", "flat"}:
                     pcs_signal_bonus *= 1.08
+
+                if prediction_type == "result":
+                    elite_generalist = (
+                        career_points_pct[idx] * 0.45
+                        + pcs_ranking_pct[idx] * 0.25
+                        + uci_ranking_pct[idx] * 0.15
+                        + max(speciality_one_day_pct[idx], speciality_hills_pct[idx], speciality_tt_pct[idx]) * 0.15
+                    )
+                    if elite_generalist >= 0.86:
+                        # Klassebakken moeten in eendagskoersen vrijwel altijd
+                        # als serieuze kanshebber blijven meedraaien.
+                        pcs_signal_bonus += (elite_generalist - 0.82) * 7.5
+                        if group in {"cobbled", "classic", "hilly"}:
+                            pcs_signal_bonus += (elite_generalist - 0.82) * 3.0
 
                 injury_penalty = min(3.0, pcs_recent_nonfinish_count) * 0.75
                 if pcs_last_incident_days not in (None, ""):
