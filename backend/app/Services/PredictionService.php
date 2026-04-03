@@ -422,6 +422,9 @@ class PredictionService
                 'live_stage_best_position' => $liveStageBestPosition,
                 'live_stage_top10_count' => $liveStageTop10Count,
                 'live_classification_position' => $liveClassificationPosition,
+                'recent_one_day_position' => null,
+                'recent_one_day_days_ago' => null,
+                'recent_one_day_momentum' => null,
                 'n_results'               => 0,
             ];
         }
@@ -483,6 +486,37 @@ class PredictionService
         $recentStageSubtypeTop10Rate = $recentStageSubtype->isNotEmpty()
             ? $recentStageSubtype->filter(fn($r) => $r->position <= 10)->count() / $recentStageSubtype->count() * 100
             : $recentParcoursTop10Rate;
+        $recentOneDayResult = $prior
+            ->where('result_type', 'result')
+            ->sortByDesc('race_start_date')
+            ->first();
+        $recentOneDayPosition = isset($recentOneDayResult?->position) && is_numeric($recentOneDayResult->position)
+            ? (int) $recentOneDayResult->position
+            : null;
+        $recentOneDayDaysAgo = null;
+        if (!empty($recentOneDayResult?->race_start_date)) {
+            try {
+                $recentOneDayDate = \Carbon\Carbon::parse((string) $recentOneDayResult->race_start_date)->startOfDay();
+                $recentOneDayDaysAgo = $recentOneDayDate->diffInDays($race->start_date->copy()->startOfDay());
+            } catch (\Throwable) {
+                $recentOneDayDaysAgo = null;
+            }
+        }
+        $recentOneDayMomentum = null;
+        if ($recentOneDayPosition !== null) {
+            $positionScore = match (true) {
+                $recentOneDayPosition === 1 => 1.0,
+                $recentOneDayPosition === 2 => 0.88,
+                $recentOneDayPosition === 3 => 0.76,
+                $recentOneDayPosition <= 5 => 0.58,
+                $recentOneDayPosition <= 10 => 0.38,
+                default => 0.0,
+            };
+            $daysDecay = $recentOneDayDaysAgo === null
+                ? 0.75
+                : max(0.0, 1.0 - ($recentOneDayDaysAgo / 40.0));
+            $recentOneDayMomentum = round($positionScore * $daysDecay, 4);
+        }
 
         // Race-specifieke features: normale decay (zonder current_year_boost)
         // zodat historische prestaties op déze koers nog meetellen (RVV-effect)
@@ -724,6 +758,9 @@ class PredictionService
             'live_stage_best_position' => $liveStageBestPosition,
             'live_stage_top10_count' => $liveStageTop10Count,
             'live_classification_position' => $liveClassificationPosition,
+            'recent_one_day_position' => $recentOneDayPosition,
+            'recent_one_day_days_ago' => $recentOneDayDaysAgo,
+            'recent_one_day_momentum' => $recentOneDayMomentum,
             'career_points'           => $rider->career_points,
             'pcs_ranking'             => $rider->pcs_ranking,
             'uci_ranking'             => $rider->uci_ranking,
@@ -1031,7 +1068,9 @@ class PredictionService
                 return 0.10;
             }
 
-            return 0.20;
+            // Sommige bronnen geven geen gap voor podiumplaatsen.
+            // Behandel podium zonder gap als sterk koerssignaal.
+            return 0.55;
         }
 
         if ($position <= 10) {
@@ -1039,7 +1078,7 @@ class PredictionService
                 if ($gap <= 20) return 0.35;
                 if ($gap <= 45) return 0.15;
             }
-            return 0.05;
+            return 0.10;
         }
 
         return 0.0;
@@ -1255,6 +1294,13 @@ class PredictionService
             $stageSubtypeExperience = min(1.0, (float) ($row['stage_subtype_results_count'] ?? 0) / 10.0);
             $stageProfileFit = $this->stageProfileFitScore($row);
             $stageProfileExperience = $this->stageProfileFitExperience($row);
+            $currentYearCloseFinish = min(1.0, max(0.0, (float) ($row['current_year_close_finish_rate'] ?? 0) / 100.0));
+            $currentYearAttackMomentum = min(1.0, max(0.0, (float) ($row['current_year_attack_momentum_rate'] ?? 0) / 100.0));
+            $currentYearCloseFinishParcours = min(1.0, max(0.0, (float) ($row['current_year_close_finish_rate_parcours'] ?? 0) / 100.0));
+            $currentYearAttackMomentumParcours = min(1.0, max(0.0, (float) ($row['current_year_attack_momentum_rate_parcours'] ?? 0) / 100.0));
+            $scenarioFormSignal = ($currentYearAttackMomentum * 0.6) + ($currentYearCloseFinish * 0.4);
+            $parcoursScenarioFormSignal = ($currentYearAttackMomentumParcours * 0.7) + ($currentYearCloseFinishParcours * 0.3);
+            $recentOneDayMomentum = min(1.0, max(0.0, (float) ($row['recent_one_day_momentum'] ?? 0.0)));
             $winsThisRace = (float) ($row['wins_this_race'] ?? 0);
             $podiumsThisRace = (float) ($row['podiums_this_race'] ?? 0);
             $winsCurrentYear = (float) ($row['wins_current_year'] ?? 0);
@@ -1459,39 +1505,48 @@ class PredictionService
                 );
             } else {
                 $favouriteScore = (
-                    $careerPct * 18.0 +
-                    $pcsPct * 16.0 +
-                    $uciPct * 8.0 +
-                    $seasonPct * 16.0 +
-                    $recentPct * 12.0 +
+                    $careerPct * 13.0 +
+                    $pcsPct * 12.0 +
+                    $uciPct * 6.0 +
+                    $seasonPct * 20.0 +
+                    $recentPct * 16.0 +
                     $coursePct * 12.0 +
                     $top10Pct * 8.0 +
-                    $currentYearParcoursAvg * 8.0 +
+                    $currentYearParcoursAvg * 10.0 +
                     $currentYearParcoursTop10 * 8.0 +
+                    $parcoursScenarioFormSignal * 8.0 +
+                    $scenarioFormSignal * 4.0 +
+                    $recentOneDayMomentum * 10.0 +
                     $seasonWinsPct * 6.0 +
-                    $raceWinsPct * 4.0
+                    $raceWinsPct * 3.0
                 );
 
                 $specialistScore = (
-                    $coursePct * 26.0 +
+                    $coursePct * 22.0 +
                     $top10Pct * 12.0 +
                     $parcoursAvg * 14.0 +
                     $recentParcoursAvg * 10.0 +
                     $recentParcoursTop10 * 10.0 +
+                    $parcoursScenarioFormSignal * 12.0 +
+                    $scenarioFormSignal * 8.0 +
+                    $recentOneDayMomentum * 8.0 +
                     $raceSpecificity * 12.0 +
-                    $raceWinsPct * 16.0 +
-                    $racePodiumsPct * 10.0 +
+                    $raceWinsPct * 10.0 +
+                    $racePodiumsPct * 8.0 +
                     $parcoursExperience * 6.0 +
-                    $raceExperience * 4.0
+                    $raceExperience * 6.0
                 );
 
                 $seasonDominanceScore = (
-                    $seasonPct * 28.0 +
-                    $recentPct * 20.0 +
+                    $seasonPct * 24.0 +
+                    $recentPct * 22.0 +
                     $currentYearAvg * 14.0 +
                     $recentAvg * 10.0 +
                     $currentYearParcoursAvg * 10.0 +
                     $recentParcoursAvg * 6.0 +
+                    $parcoursScenarioFormSignal * 8.0 +
+                    $scenarioFormSignal * 6.0 +
+                    $recentOneDayMomentum * 10.0 +
                     $seasonWinsPct * 14.0 +
                     $seasonPodiumsPct * 8.0 +
                     $careerPct * 6.0
@@ -1692,6 +1747,10 @@ class PredictionService
 
     private function getTopCompetitorRiderIds(Race $race): Collection
     {
+        if (!$this->pcsSignalsEnabled()) {
+            return collect();
+        }
+
         try {
             $data = $this->api->getTopCompetitors($race->pcs_slug, $race->year);
         } catch (\RuntimeException $e) {
@@ -1711,6 +1770,10 @@ class PredictionService
 
     private function topCompetitorMetadata(Race $race, string $riderSlug): array
     {
+        if (!$this->pcsSignalsEnabled()) {
+            return [];
+        }
+
         $cacheKey = "{$race->pcs_slug}:{$race->year}";
 
         if (!array_key_exists($cacheKey, $this->topCompetitorCache)) {
@@ -1755,6 +1818,10 @@ class PredictionService
             'comeback_finished_count' => 0,
             'days_since_last_result' => null,
         ];
+
+        if (!$this->pcsSignalsEnabled()) {
+            return $this->pcsSeasonSignalsCache[$cacheKey] = $default;
+        }
 
         $topCompetitorRank = isset($pcsTopCompetitor['rank']) ? (int) $pcsTopCompetitor['rank'] : null;
         $shouldFetch = $race->isOneDay()
@@ -1839,6 +1906,11 @@ class PredictionService
             'comeback_finished_count' => $comebackFinishedCount,
             'days_since_last_result' => $lastFinished ? $lastFinished['date']->diffInDays($cutoff) : null,
         ];
+    }
+
+    private function pcsSignalsEnabled(): bool
+    {
+        return !(bool) config('prediction.skip_pcs_signals', false);
     }
 
     private function isSmallerRaceClass(?string $raceClass): bool
@@ -1971,7 +2043,10 @@ class PredictionService
                 $memberOrder = $member['startlist_order'] ?? null;
                 $orderGap = (is_int($leaderOrder) && is_int($memberOrder)) ? ($memberOrder - $leaderOrder) : 0;
                 $hasOrderPriority = $orderGap >= 1;
-                $orderEligible = $hasOrderPriority && $gap >= -0.02;
+                $isClassicOneDay = $race->isOneDay()
+                    && in_array($race->parcours_type, ['cobbled', 'classic', 'hilly'], true);
+                $orderGapTolerance = $isClassicOneDay ? -0.20 : -0.02;
+                $orderEligible = $hasOrderPriority && $gap >= $orderGapTolerance;
 
                 if (!$orderEligible && $gap < 0.10) {
                     continue;
@@ -1990,7 +2065,11 @@ class PredictionService
                     continue;
                 }
 
-                $orderBoost = $orderEligible ? min(0.08, max(0.02, $orderGap * 0.015)) : 0.0;
+                $orderBoost = $orderEligible
+                    ? ($isClassicOneDay
+                        ? min(0.12, max(0.03, $orderGap * 0.02))
+                        : min(0.08, max(0.02, $orderGap * 0.015)))
+                    : 0.0;
                 $penaltyFactor = max(0.62, min(0.92, 1 - ($gap * 0.35) - $orderBoost));
                 $newMemberWin = max(0.0, min(1.0, $memberWin * $penaltyFactor));
                 $winTransfer = max(0.0, ($memberWin - $newMemberWin) * 0.8);
@@ -2051,15 +2130,19 @@ class PredictionService
         $course = (float) ($features['field_pct_course_fit'] ?? 0.5);
         $top10 = (float) ($features['field_pct_top10_rate'] ?? 0.5);
         $dominance = min(1.0, max(0.0, (float) ($features['season_dominance_score'] ?? 50.0) / 100.0));
+        $momentum = min(1.0, max(0.0, (float) ($features['current_year_attack_momentum_rate_parcours'] ?? $features['current_year_attack_momentum_rate'] ?? 0.0) / 100.0));
+        $closeFinish = min(1.0, max(0.0, (float) ($features['current_year_close_finish_rate_parcours'] ?? $features['current_year_close_finish_rate'] ?? 0.0) / 100.0));
 
         return (
-            $career * 0.24 +
-            $pcs * 0.16 +
-            $recent * 0.20 +
-            $season * 0.18 +
-            $course * 0.10 +
+            $career * 0.19 +
+            $pcs * 0.12 +
+            $recent * 0.21 +
+            $season * 0.20 +
+            $course * 0.11 +
             $top10 * 0.05 +
-            $dominance * 0.07
+            $dominance * 0.06 +
+            $momentum * 0.04 +
+            $closeFinish * 0.02
         );
     }
 

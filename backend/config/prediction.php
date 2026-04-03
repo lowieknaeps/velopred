@@ -1,6 +1,8 @@
 <?php
 
 return [
+    'skip_pcs_signals' => (bool) env('PREDICTION_SKIP_PCS_SIGNALS', false),
+
     /*
     |--------------------------------------------------------------------------
     | Manuele incident-overrides

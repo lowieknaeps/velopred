@@ -621,6 +621,11 @@ class VelopredPredictor:
         recent_parcours_top10 = (self._safe_series(df, "recent_top10_rate_parcours", 0.0) / 100.0).clip(lower=0.0, upper=1.0)
         current_year_parcours_avg = self._normalized_inverse(self._safe_series(df, "current_year_avg_position_parcours", 25.0), 25.0)
         current_year_parcours_top10 = (self._safe_series(df, "current_year_top10_rate_parcours", 0.0) / 100.0).clip(lower=0.0, upper=1.0)
+        current_year_close_finish = (self._safe_series(df, "current_year_close_finish_rate", 0.0) / 100.0).clip(lower=0.0, upper=1.0)
+        current_year_attack_momentum = (self._safe_series(df, "current_year_attack_momentum_rate", 0.0) / 100.0).clip(lower=0.0, upper=1.0)
+        current_year_close_finish_parcours = (self._safe_series(df, "current_year_close_finish_rate_parcours", 0.0) / 100.0).clip(lower=0.0, upper=1.0)
+        current_year_attack_momentum_parcours = (self._safe_series(df, "current_year_attack_momentum_rate_parcours", 0.0) / 100.0).clip(lower=0.0, upper=1.0)
+        recent_one_day_momentum = self._safe_series(df, "recent_one_day_momentum", 0.0).clip(lower=0.0, upper=1.0)
         stage_subtype_avg = self._normalized_inverse(self._safe_series(df, "avg_position_stage_subtype", 25.0), 25.0)
         recent_stage_subtype_avg = self._normalized_inverse(self._safe_series(df, "recent_avg_position_stage_subtype", 25.0), 25.0)
         current_year_stage_subtype_avg = self._normalized_inverse(self._safe_series(df, "current_year_avg_position_stage_subtype", 25.0), 25.0)
@@ -643,19 +648,24 @@ class VelopredPredictor:
         race_wins_pct = (wins_this_race / 3.0).clip(lower=0.0, upper=1.0)
         race_podiums_pct = (podiums_this_race / 5.0).clip(lower=0.0, upper=1.0)
         classification_race_history = (race_wins_pct * 0.65 + race_podiums_pct * 0.35) * (0.20 + race_experience * 0.80)
+        scenario_form_signal = current_year_attack_momentum * 0.6 + current_year_close_finish * 0.4
+        parcours_scenario_form_signal = current_year_attack_momentum_parcours * 0.7 + current_year_close_finish_parcours * 0.3
 
         favourite_score = (
-            career_pct * 18.0
-            + pcs_pct * 16.0
-            + uci_pct * 8.0
-            + season_pct * 16.0
-            + recent_pct * 12.0
+            career_pct * 13.0
+            + pcs_pct * 12.0
+            + uci_pct * 6.0
+            + season_pct * 20.0
+            + recent_pct * 16.0
             + course_pct * 12.0
             + top10_pct * 8.0
-            + current_year_parcours_avg * 8.0
+            + current_year_parcours_avg * 10.0
             + current_year_parcours_top10 * 8.0
+            + parcours_scenario_form_signal * 8.0
+            + scenario_form_signal * 4.0
+            + recent_one_day_momentum * 10.0
             + season_wins_pct * 6.0
-            + race_wins_pct * 4.0
+            + race_wins_pct * 3.0
         )
 
         stage_favourite_score = (
@@ -680,16 +690,19 @@ class VelopredPredictor:
         )
 
         specialist_score = (
-            course_pct * 26.0
+            course_pct * 22.0
             + top10_pct * 12.0
             + parcours_avg * 14.0
             + recent_parcours_avg * 10.0
             + recent_parcours_top10 * 10.0
+            + parcours_scenario_form_signal * 12.0
+            + scenario_form_signal * 8.0
+            + recent_one_day_momentum * 8.0
             + race_specificity * 12.0
-            + race_wins_pct * 16.0
-            + race_podiums_pct * 10.0
+            + race_wins_pct * 10.0
+            + race_podiums_pct * 8.0
             + parcours_experience * 6.0
-            + race_experience * 4.0
+            + race_experience * 6.0
         )
 
         stage_specialist_score = (
@@ -712,12 +725,15 @@ class VelopredPredictor:
         )
 
         season_dominance_score = (
-            season_pct * 28.0
-            + recent_pct * 20.0
+            season_pct * 24.0
+            + recent_pct * 22.0
             + current_year_avg * 14.0
             + recent_avg * 10.0
             + current_year_parcours_avg * 10.0
             + recent_parcours_avg * 6.0
+            + parcours_scenario_form_signal * 8.0
+            + scenario_form_signal * 6.0
+            + recent_one_day_momentum * 10.0
             + season_wins_pct * 14.0
             + season_podiums_pct * 8.0
             + career_pct * 6.0
