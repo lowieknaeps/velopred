@@ -103,6 +103,12 @@ class PredictionService
                 $featuresBySlug,
                 $context['prediction_type'],
             );
+            $predictions = $this->applyClassicContenderMomentumAdjustments(
+                $predictions,
+                $race,
+                $featuresBySlug,
+                $context['prediction_type'],
+            );
             $savedRiderIds = [];
 
             DB::transaction(function () use (
@@ -2080,6 +2086,15 @@ class PredictionService
                 $newMemberTop10 = max(0.0, min(1.0, $memberTop10 * min(0.96, $penaltyFactor + 0.05)));
                 $newLeaderTop10 = max(0.0, min(1.0, $leaderTop10 + max(0.0, ($memberTop10 - $newMemberTop10) * 0.5)));
 
+                if ($isClassicOneDay && $orderEligible) {
+                    $targetLeaderWin = $newMemberWin * 1.03;
+                    if ($newLeaderWin < $targetLeaderWin) {
+                        $winDelta = $targetLeaderWin - $newLeaderWin;
+                        $newLeaderWin = min(1.0, $targetLeaderWin);
+                        $newMemberWin = max(0.0, $newMemberWin - ($winDelta * 0.9));
+                    }
+                }
+
                 $predictions[$memberIdx]['win_probability'] = $newMemberWin;
                 $predictions[$memberIdx]['top10_probability'] = $newMemberTop10;
                 $predictions[$leaderIdx]['win_probability'] = $newLeaderWin;
@@ -2144,6 +2159,132 @@ class PredictionService
             $momentum * 0.04 +
             $closeFinish * 0.02
         );
+    }
+
+    private function applyClassicContenderMomentumAdjustments(
+        array $predictions,
+        Race $race,
+        array $featuresBySlug,
+        string $predictionType
+    ): array {
+        if (
+            $predictionType !== 'result'
+            || !$race->isOneDay()
+            || !in_array($race->parcours_type, ['cobbled', 'classic', 'hilly'], true)
+            || count($predictions) < 2
+        ) {
+            return $predictions;
+        }
+
+        $updated = false;
+
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            if ($slug === '' || !isset($featuresBySlug[$slug]) || !is_array($featuresBySlug[$slug])) {
+                continue;
+            }
+
+            $features = $featuresBySlug[$slug];
+            $momentum = min(1.0, max(0.0, (float) ($features['recent_one_day_momentum'] ?? 0.0)));
+            $careerPct = min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5)));
+            $recentPct = min(1.0, max(0.0, (float) ($features['field_pct_recent_form'] ?? 0.5)));
+            $seasonDom = min(1.0, max(0.0, (float) ($features['season_dominance_score'] ?? 50.0) / 100.0));
+            $scenario = (
+                min(1.0, max(0.0, (float) ($features['current_year_attack_momentum_rate_parcours'] ?? 0.0) / 100.0)) * 0.7
+                + min(1.0, max(0.0, (float) ($features['current_year_close_finish_rate_parcours'] ?? 0.0) / 100.0)) * 0.3
+            );
+            $recentOneDayPosition = isset($features['recent_one_day_position']) && is_numeric($features['recent_one_day_position'])
+                ? (int) $features['recent_one_day_position']
+                : null;
+            $recentOneDayDaysAgo = isset($features['recent_one_day_days_ago']) && is_numeric($features['recent_one_day_days_ago'])
+                ? (int) $features['recent_one_day_days_ago']
+                : null;
+
+            $freshPodiumSignal = $recentOneDayPosition !== null
+                && $recentOneDayPosition <= 3
+                && $recentOneDayDaysAgo !== null
+                && $recentOneDayDaysAgo <= 14;
+            $freshTop10Signal = $recentOneDayPosition !== null
+                && $recentOneDayPosition <= 10
+                && $recentOneDayDaysAgo !== null
+                && $recentOneDayDaysAgo <= 10;
+
+            $coreContender = $careerPct >= 0.90 && ($momentum >= 0.45 || $scenario >= 0.45 || $freshPodiumSignal);
+
+            if ($coreContender) {
+                $boostFactor = 1.0
+                    + ($momentum * 0.28)
+                    + ($scenario * 0.12)
+                    + ($seasonDom * 0.08)
+                    + ($recentPct * 0.05);
+
+                if ($freshPodiumSignal) {
+                    $boostFactor += 0.55;
+                } elseif ($freshTop10Signal) {
+                    $boostFactor += 0.20;
+                }
+
+                if (
+                    $recentOneDayPosition !== null
+                    && $recentOneDayPosition <= 2
+                    && $recentOneDayDaysAgo !== null
+                    && $recentOneDayDaysAgo <= 10
+                ) {
+                    $boostFactor += 0.25;
+                }
+
+                if (
+                    $recentOneDayPosition !== null
+                    && $recentOneDayPosition <= 3
+                    && $recentOneDayDaysAgo !== null
+                    && $recentOneDayDaysAgo <= 7
+                    && $momentum >= 0.75
+                ) {
+                    $boostFactor += 0.35;
+                }
+
+                $boostFactor = min(2.25, $boostFactor);
+            } else {
+                $boostFactor = 1.0 + ($momentum * 0.06) + ($scenario * 0.03);
+            }
+
+            $currentWin = (float) ($prediction['win_probability'] ?? 0.0);
+            $currentTop10 = (float) ($prediction['top10_probability'] ?? 0.0);
+            $newWin = max(0.0, min(1.0, $currentWin * $boostFactor));
+            $newTop10 = max(0.0, min(0.98, $currentTop10 * (1.0 + (($boostFactor - 1.0) * 0.45))));
+
+            if (abs($newWin - $currentWin) > 0.0001 || abs($newTop10 - $currentTop10) > 0.0001) {
+                $predictions[$index]['win_probability'] = $newWin;
+                $predictions[$index]['top10_probability'] = $newTop10;
+                $updated = true;
+            }
+        }
+
+        if (!$updated) {
+            return $predictions;
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        return $predictions;
     }
 
     private function raceTeamSignals(Race $race, Rider $rider): array
