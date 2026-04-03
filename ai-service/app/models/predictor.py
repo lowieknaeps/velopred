@@ -1564,6 +1564,18 @@ class VelopredPredictor:
                     if manual_incident_days_ago not in (None, ""):
                         injury_penalty += max(0.0, 10.0 - float(manual_incident_days_ago)) * 0.08
 
+                if group in {"cobbled", "classic", "hilly"}:
+                    if manual_incident_penalty > 0:
+                        # In klassiekers weegt recente blessureterugkeer zwaarder door
+                        # dan in andere contexten.
+                        injury_penalty += manual_incident_penalty * 3.2
+                        if manual_incident_days_ago not in (None, ""):
+                            injury_penalty += max(0.0, 28.0 - float(manual_incident_days_ago)) * 0.05
+                    if pcs_last_incident_days not in (None, ""):
+                        injury_penalty += max(0.0, 35.0 - float(pcs_last_incident_days)) * 0.03
+                    if pcs_comeback_finished_count <= 2.0:
+                        injury_penalty += max(0.0, 2.0 - pcs_comeback_finished_count) * 0.9
+
                 if float(rider.get("pcs_recent_activity_count_30d", 0) or 0) >= 4:
                     injury_penalty *= 0.85
 
