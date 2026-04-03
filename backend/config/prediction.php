@@ -16,8 +16,8 @@ return [
     'manual_incidents' => [
         'mads-pedersen' => [
             'date' => '2026-03-24',
-            'severity' => 0.52,
-            'decay_days' => 28,
+            'severity' => 0.60,
+            'decay_days' => 32,
             'note' => 'Recente terugkeer na blessure/val',
         ],
         /*

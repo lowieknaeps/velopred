@@ -2239,8 +2239,20 @@ class PredictionService
                     $recentOneDayPosition !== null
                     && $recentOneDayPosition <= 3
                     && $recentOneDayDaysAgo !== null
+                    && $recentOneDayDaysAgo <= 10
+                    && ($momentum >= 0.60 || $scenario >= 0.58)
+                ) {
+                    // Sterke recente klassiekerprestatie + zichtbaar koersverloop
+                    // moet duidelijk doorwegen in volgende eendagskoers.
+                    $boostFactor += 0.24;
+                }
+
+                if (
+                    $recentOneDayPosition !== null
+                    && $recentOneDayPosition <= 3
+                    && $recentOneDayDaysAgo !== null
                     && $recentOneDayDaysAgo <= 7
-                    && $momentum >= 0.75
+                    && $momentum >= 0.65
                 ) {
                     $boostFactor += 0.35;
                 }
