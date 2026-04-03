@@ -2006,6 +2006,10 @@ class PredictionService
                 'slug' => $slug,
                 'startlist_order' => is_numeric($startlistOrder) ? (int) $startlistOrder : null,
                 'leader_score' => $this->intraTeamLeaderScore($features),
+                'career_pct' => min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5))),
+                'pcs_pct' => min(1.0, max(0.0, (float) ($features['field_pct_pcs_ranking'] ?? 0.5))),
+                'uci_pct' => min(1.0, max(0.0, (float) ($features['field_pct_uci_ranking'] ?? 0.5))),
+                'recent_pct' => min(1.0, max(0.0, (float) ($features['field_pct_recent_form'] ?? 0.5))),
             ];
         }
 
@@ -2053,6 +2057,12 @@ class PredictionService
                     && in_array($race->parcours_type, ['cobbled', 'classic', 'hilly'], true);
                 $orderGapTolerance = $isClassicOneDay ? -0.20 : -0.02;
                 $orderEligible = $hasOrderPriority && $gap >= $orderGapTolerance;
+                $leaderSuperElite = ((float) ($leader['career_pct'] ?? 0.5)) >= 0.985
+                    && ((float) ($leader['pcs_pct'] ?? 0.5)) >= 0.975
+                    && ((float) ($leader['uci_pct'] ?? 0.5)) >= 0.96;
+                $eliteGap = ((float) ($leader['career_pct'] ?? 0.5)) - ((float) ($member['career_pct'] ?? 0.5));
+                $leaderClearlyAboveTeammate = $eliteGap >= 0.04
+                    || (((float) ($leader['leader_score'] ?? 0.0)) - ((float) ($member['leader_score'] ?? 0.0))) >= 0.08;
 
                 if (!$orderEligible && $gap < 0.10) {
                     continue;
@@ -2077,6 +2087,9 @@ class PredictionService
                         : min(0.08, max(0.02, $orderGap * 0.015)))
                     : 0.0;
                 $penaltyFactor = max(0.62, min(0.92, 1 - ($gap * 0.35) - $orderBoost));
+                if ($leaderSuperElite && $leaderClearlyAboveTeammate && ($orderEligible || $hasOrderPriority)) {
+                    $penaltyFactor = min($penaltyFactor, $isClassicOneDay ? 0.58 : 0.64);
+                }
                 $newMemberWin = max(0.0, min(1.0, $memberWin * $penaltyFactor));
                 $winTransfer = max(0.0, ($memberWin - $newMemberWin) * 0.8);
                 $newLeaderWin = max(0.0, min(1.0, $leaderWin + $winTransfer));
@@ -2092,6 +2105,14 @@ class PredictionService
                         $winDelta = $targetLeaderWin - $newLeaderWin;
                         $newLeaderWin = min(1.0, $targetLeaderWin);
                         $newMemberWin = max(0.0, $newMemberWin - ($winDelta * 0.9));
+                    }
+                }
+                if ($leaderSuperElite && $leaderClearlyAboveTeammate && ($orderEligible || $hasOrderPriority)) {
+                    $targetLeaderWin = $newMemberWin * ($isClassicOneDay ? 1.10 : 1.06);
+                    if ($newLeaderWin < $targetLeaderWin) {
+                        $winDelta = $targetLeaderWin - $newLeaderWin;
+                        $newLeaderWin = min(1.0, $targetLeaderWin);
+                        $newMemberWin = max(0.0, $newMemberWin - ($winDelta * 0.85));
                     }
                 }
 
