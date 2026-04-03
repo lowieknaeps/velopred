@@ -2210,8 +2210,9 @@ class PredictionService
                 && $recentOneDayDaysAgo <= 10;
 
             $coreContender = $careerPct >= 0.90 && ($momentum >= 0.45 || $scenario >= 0.45 || $freshPodiumSignal);
+            $eliteFallbackContender = $careerPct >= 0.97 && $seasonDom >= 0.62 && $recentPct >= 0.58;
 
-            if ($coreContender) {
+            if ($coreContender || $eliteFallbackContender) {
                 $boostFactor = 1.0
                     + ($momentum * 0.28)
                     + ($scenario * 0.12)
@@ -2241,6 +2242,10 @@ class PredictionService
                     && $momentum >= 0.75
                 ) {
                     $boostFactor += 0.35;
+                }
+
+                if ($eliteFallbackContender && !$freshPodiumSignal) {
+                    $boostFactor += 0.28;
                 }
 
                 $boostFactor = min(2.25, $boostFactor);
