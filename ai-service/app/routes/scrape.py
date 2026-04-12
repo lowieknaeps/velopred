@@ -77,6 +77,59 @@ def _extract_photo_url_from_html(html: str) -> str | None:
     return None
 
 
+def _fallback_parse_one_day_results(html: str) -> list[dict]:
+    """Parse one-day results directly from table HTML when pcs-scraper fails."""
+    tree = HTMLParser(html)
+    tables = tree.css("table.basic")
+    parsed: list[dict] = []
+
+    for table in tables:
+        header_text = " ".join(th.text(strip=True).lower() for th in table.css("thead th"))
+        if header_text and not (
+            ("rnk" in header_text or "rank" in header_text or "pos" in header_text)
+            and "rider" in header_text
+            and ("team" in header_text or "time" in header_text)
+        ):
+            continue
+
+        for row in table.css("tbody tr"):
+            cells = row.css("td")
+            if len(cells) < 2:
+                continue
+
+            rider_link = row.css_first('a[href^="rider/"]')
+            if rider_link is None:
+                continue
+
+            rider_href = rider_link.attributes.get("href", "")
+            rider_slug = slug_from_url(rider_href)
+            if not rider_slug or rider_slug == "rider" or "-" not in rider_slug:
+                continue
+
+            team_link = row.css_first('a[href^="team/"]')
+            rank_text = cells[0].text(strip=True) if cells else ""
+            rank_value = _parse_int(rank_text)
+            status = _parse_status(rank_text)
+            if rank_value is None and status == "finished":
+                continue
+
+            parsed.append({
+                "rider_slug": rider_slug,
+                "rider_name": rider_link.text(strip=True),
+                "team_slug": slug_from_url(team_link.attributes.get("href", "")) if team_link else None,
+                "team_name": team_link.text(strip=True) if team_link else None,
+                "nationality": None,
+                "position": rank_value,
+                "status": status,
+                "time_seconds": None,
+                "gap_seconds": None,
+                "pcs_points": None,
+                "uci_points": None,
+            })
+
+    return parsed
+
+
 # ── Race ──────────────────────────────────────────────────────────────────────
 
 @router.get("/race/{slug}/{year}")
@@ -333,6 +386,15 @@ def scrape_one_day_result(slug: str, year: int):
                 "results": results,
             }
         except (ValueError, ExpectedParsingError) as e:
+            if 'html' in locals():
+                fallback_results = _fallback_parse_one_day_results(html)
+                if fallback_results:
+                    return {
+                        "race_slug": slug,
+                        "year": year,
+                        "result_type": "result",
+                        "results": fallback_results,
+                    }
             errors.append(f"{path}: {e}")
             continue
 

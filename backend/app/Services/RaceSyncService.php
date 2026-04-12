@@ -198,10 +198,22 @@ class RaceSyncService
 
     private function saveResults(Race $race, array $results, string $resultType, ?int $stageNumber = null): void
     {
+        $startlistRiderIds = null;
+        if ($resultType === 'result' && $stageNumber === null && $race->isOneDay()) {
+            $startlistRiderIds = RaceEntry::where('race_id', $race->id)
+                ->pluck('rider_id')
+                ->filter()
+                ->values();
+        }
+
         foreach ($results as $result) {
             $rider = Rider::where('pcs_slug', $result['rider_slug'])->first();
             if (!$rider) {
                 Log::warning("[RaceSync] Renner niet gevonden: {$result['rider_slug']}");
+                continue;
+            }
+            if ($startlistRiderIds !== null && !$startlistRiderIds->contains($rider->id)) {
+                Log::warning("[RaceSync] Renner niet in startlijst, uitslag genegeerd: {$result['rider_slug']}");
                 continue;
             }
 
