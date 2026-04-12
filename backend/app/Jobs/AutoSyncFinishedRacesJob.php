@@ -112,12 +112,15 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
 
     public function handleImminentStartlists(
         RaceSyncService $raceSyncService,
+        PostResultSyncService $postResultSync,
         UpcomingOneDayPredictionRefreshService $predictionRefreshService,
     ): void
     {
+        $now = now();
         $today = now()->toDateString();
         $tomorrow = now()->copy()->addDay()->toDateString();
         $staleThreshold = now()->copy()->subMinutes(15);
+        $sameDayResultWindow = $now->hour >= 17;
 
         $imminentRaces = Race::whereDate('start_date', '>=', $today)
             ->whereDate('start_date', '<=', $tomorrow)
@@ -139,7 +142,39 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
             }
         }
 
-        if ($imminentRaces->isNotEmpty()) {
+        // Zelfde dag resultaat-sync voor eendagskoersen (vanaf de avond).
+        // Zo hoeven we niet te wachten tot "gisteren"-logica op de volgende dag.
+        $evaluatedTodayFinishedOneDay = false;
+        if ($sameDayResultWindow) {
+            $todayFinishedOneDayRaces = Race::oneDay()
+                ->whereDate('end_date', $today)
+                ->orderBy('start_date')
+                ->get();
+
+            foreach ($todayFinishedOneDayRaces as $race) {
+                $hasFinalResults = $race->results()
+                    ->where('result_type', 'result')
+                    ->whereNull('stage_number')
+                    ->whereNotNull('position')
+                    ->where('status', 'finished')
+                    ->exists();
+
+                $isStale = $race->synced_at === null || $race->synced_at->lt($staleThreshold);
+                if (!$isStale && $hasFinalResults) {
+                    continue;
+                }
+
+                try {
+                    $syncedRace = $raceSyncService->syncRace($race->pcs_slug, $race->year);
+                    $postSync = $postResultSync->handle($syncedRace, false);
+                    $evaluatedTodayFinishedOneDay = $evaluatedTodayFinishedOneDay || ($postSync['evaluated'] ?? false);
+                } catch (\Throwable $e) {
+                    Log::warning("[AutoSync] Zelfde dag result-sync mislukt: {$race->name}: {$e->getMessage()}");
+                }
+            }
+        }
+
+        if ($imminentRaces->isNotEmpty() || $evaluatedTodayFinishedOneDay) {
             $predictionRefreshService->refreshDateRange($today, $tomorrow);
         }
     }

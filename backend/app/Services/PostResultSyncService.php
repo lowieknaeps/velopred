@@ -16,7 +16,7 @@ class PostResultSyncService
     {
         $race->refresh();
 
-        if (!$race->isOneDay() || !$race->hasFinished()) {
+        if (!$race->isOneDay()) {
             return [
                 'evaluated' => false,
                 'refreshed_upcoming_predictions' => 0,
