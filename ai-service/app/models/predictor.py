@@ -133,6 +133,8 @@ BASE_FEATURE_COLS = [
     "race_specificity_ratio",   # hoe groot is de specialisatie op déze koers
     "manual_incident_penalty",  # handmatige val/blessure-penalty met decay
     "manual_incident_days_ago", # aantal dagen sinds handmatig incident
+    "race_dynamics_form_adjustment", # koersverloop-signaal (sterker dan uitslag)
+    "race_dynamics_incident_penalty", # extra pech/incidentimpact uit koersverloop
     "team_startlist_size",      # aantal ploeggenoten op startlijst
     "team_career_points_total", # totale teamsterkte op basis van career points
     "team_career_points_share", # teamsterkte t.o.v. sterkste team in veld
@@ -210,6 +212,8 @@ SPECIALIST_FEATURE_COLS = [
     "race_specificity_ratio",
     "manual_incident_penalty",
     "manual_incident_days_ago",
+    "race_dynamics_form_adjustment",
+    "race_dynamics_incident_penalty",
     "team_startlist_size",
     "team_career_points_total",
     "team_career_points_share",
@@ -313,6 +317,8 @@ DEFAULT_FEATURE_VALUES = {
     "race_specificity_ratio": 1.0,
     "manual_incident_penalty": 0.0,
     "manual_incident_days_ago": 999.0,
+    "race_dynamics_form_adjustment": 0.0,
+    "race_dynamics_incident_penalty": 0.0,
     "team_startlist_size": 1.0,
     "team_career_points_total": 0.0,
     "team_career_points_share": 0.0,
@@ -1526,6 +1532,8 @@ class VelopredPredictor:
                 pcs_days_since_last_result = rider.get("pcs_days_since_last_result")
                 manual_incident_penalty = float(rider.get("manual_incident_penalty", 0) or 0)
                 manual_incident_days_ago = rider.get("manual_incident_days_ago")
+                race_dynamics_form_adjustment = float(rider.get("race_dynamics_form_adjustment", 0) or 0)
+                race_dynamics_incident_penalty = float(rider.get("race_dynamics_incident_penalty", 0) or 0)
                 form_collapse_score = float(rider.get("form_collapse_score", 0) or 0)
                 reliable_poor_form = float(rider.get("reliable_poor_form", 0) or 0)
                 parcours_breakthrough_ratio = float(rider.get("parcours_breakthrough_ratio", 1) or 1)
@@ -1563,6 +1571,13 @@ class VelopredPredictor:
                         if group in {"cobbled", "classic", "hilly"}:
                             pcs_signal_bonus += (elite_generalist - 0.82) * 3.0
 
+                if abs(race_dynamics_form_adjustment) > 0:
+                    # Koersverloop-signaal (bv. pech ondanks sterke koers)
+                    # voorkomt dat een ongelukkige uitslag de vorm te hard drukt.
+                    pcs_signal_bonus += race_dynamics_form_adjustment * (
+                        4.0 if group in {"cobbled", "classic", "hilly"} else 2.6
+                    )
+
                 injury_penalty = min(3.0, pcs_recent_nonfinish_count) * 0.75
                 if pcs_last_incident_days not in (None, ""):
                     injury_penalty += max(0.0, 45.0 - float(pcs_last_incident_days)) / 45.0 * (
@@ -1580,6 +1595,10 @@ class VelopredPredictor:
                     injury_penalty += manual_incident_penalty * 4.2
                     if manual_incident_days_ago not in (None, ""):
                         injury_penalty += max(0.0, 10.0 - float(manual_incident_days_ago)) * 0.08
+                if race_dynamics_incident_penalty > 0:
+                    injury_penalty += race_dynamics_incident_penalty * (
+                        3.2 if group in {"cobbled", "classic", "hilly"} else 2.0
+                    )
 
                 if group in {"cobbled", "classic", "hilly"}:
                     if manual_incident_penalty > 0:

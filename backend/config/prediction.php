@@ -29,4 +29,45 @@ return [
         ],
         */
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Manuele koersdynamiek-overrides (pech / koersverloop)
+    |--------------------------------------------------------------------------
+    |
+    | Gebruik race-specifieke signalen wanneer uitslag alleen het koersverloop
+    | niet goed weerspiegelt (lekke band, val, pech, sterke aanvalsprestatie).
+    |
+    | race key formaat: "{pcs_slug}:{year}"
+    | rider values:
+    | - form_adjustment: -1..1  (positief = sterker dan uitslag toont)
+    | - incident_penalty: 0..1  (extra pech/incident-impact)
+    | - date: eventdatum (default race start_date)
+    | - decay_days: lineair verval (default 21)
+    */
+    'manual_race_dynamics' => [
+        'paris-roubaix:2026' => [
+            'wout-van-aert' => [
+                'date' => '2026-04-12',
+                'form_adjustment' => 0.42,
+                'incident_penalty' => 0.06,
+                'decay_days' => 24,
+                'note' => 'Sterk koersverloop ondanks pechmomenten',
+            ],
+            'tadej-pogacar' => [
+                'date' => '2026-04-12',
+                'form_adjustment' => 0.28,
+                'incident_penalty' => 0.04,
+                'decay_days' => 21,
+                'note' => 'Topniveau bevestigd in koersverloop',
+            ],
+            'mathieu-van-der-poel' => [
+                'date' => '2026-04-12',
+                'form_adjustment' => 0.18,
+                'incident_penalty' => 0.14,
+                'decay_days' => 21,
+                'note' => 'Pech/lekke band beïnvloedde finale',
+            ],
+        ],
+    ],
 ];

@@ -255,6 +255,17 @@ class PredictionService
         $pcsTopCompetitor = $this->topCompetitorMetadata($race, $rider->pcs_slug);
         $pcsSeasonSignals = $this->pcsSeasonSignals($rider, $race, $pcsTopCompetitor);
         $manualIncident = $this->manualIncidentSignal($rider->pcs_slug, $race->start_date);
+        $raceDynamics = $this->manualRaceDynamicsSignal($rider->pcs_slug, $race);
+        $combinedIncidentPenalty = min(1.0, max(0.0, (float) $manualIncident['penalty'] + (float) $raceDynamics['incident_penalty']));
+        $combinedIncidentDaysAgo = match (true) {
+            is_numeric($manualIncident['days_ago'] ?? null) && is_numeric($raceDynamics['days_ago'] ?? null) => min(
+                (int) $manualIncident['days_ago'],
+                (int) $raceDynamics['days_ago']
+            ),
+            is_numeric($manualIncident['days_ago'] ?? null) => (int) $manualIncident['days_ago'],
+            is_numeric($raceDynamics['days_ago'] ?? null) => (int) $raceDynamics['days_ago'],
+            default => null,
+        };
         $teamSignals = $this->raceTeamSignals($race, $rider);
         $currentRaceResults = $race->isOneDay()
             ? collect()
@@ -421,8 +432,10 @@ class PredictionService
                 'team_startlist_size' => $teamSignals['team_startlist_size'],
                 'team_career_points_total' => $teamSignals['team_career_points_total'],
                 'team_career_points_share' => $teamSignals['team_career_points_share'],
-                'manual_incident_penalty' => $manualIncident['penalty'],
-                'manual_incident_days_ago' => $manualIncident['days_ago'],
+                'manual_incident_penalty' => round($combinedIncidentPenalty, 4),
+                'manual_incident_days_ago' => $combinedIncidentDaysAgo,
+                'race_dynamics_form_adjustment' => round((float) $raceDynamics['form_adjustment'], 4),
+                'race_dynamics_incident_penalty' => round((float) $raceDynamics['incident_penalty'], 4),
                 'live_stage_results_count' => $liveStageResultsCount,
                 'live_stage_avg_position' => $liveStageAveragePosition,
                 'live_stage_best_position' => $liveStageBestPosition,
@@ -757,8 +770,10 @@ class PredictionService
             'team_startlist_size' => $teamSignals['team_startlist_size'],
             'team_career_points_total' => $teamSignals['team_career_points_total'],
             'team_career_points_share' => $teamSignals['team_career_points_share'],
-            'manual_incident_penalty' => $manualIncident['penalty'],
-            'manual_incident_days_ago' => $manualIncident['days_ago'],
+            'manual_incident_penalty' => round($combinedIncidentPenalty, 4),
+            'manual_incident_days_ago' => $combinedIncidentDaysAgo,
+            'race_dynamics_form_adjustment' => round((float) $raceDynamics['form_adjustment'], 4),
+            'race_dynamics_incident_penalty' => round((float) $raceDynamics['incident_penalty'], 4),
             'live_stage_results_count' => $liveStageResultsCount,
             'live_stage_avg_position' => $liveStageAveragePosition,
             'live_stage_best_position' => $liveStageBestPosition,
@@ -1963,6 +1978,51 @@ class PredictionService
         }
 
         return ['penalty' => $penalty, 'days_ago' => $daysAgo];
+    }
+
+    private function manualRaceDynamicsSignal(string $riderSlug, Race $race): array
+    {
+        $overrides = config('prediction.manual_race_dynamics', []);
+        if (!is_array($overrides) || $riderSlug === '' || $race->pcs_slug === '') {
+            return ['form_adjustment' => 0.0, 'incident_penalty' => 0.0, 'days_ago' => null];
+        }
+
+        $raceKey = "{$race->pcs_slug}:{$race->year}";
+        $raceDynamics = $overrides[$raceKey] ?? null;
+        if (!is_array($raceDynamics)) {
+            return ['form_adjustment' => 0.0, 'incident_penalty' => 0.0, 'days_ago' => null];
+        }
+
+        $entry = $raceDynamics[$riderSlug] ?? null;
+        if (!is_array($entry)) {
+            return ['form_adjustment' => 0.0, 'incident_penalty' => 0.0, 'days_ago' => null];
+        }
+
+        try {
+            $eventDate = !empty($entry['date'])
+                ? \Carbon\Carbon::parse((string) $entry['date'])->startOfDay()
+                : $race->start_date->copy()->startOfDay();
+        } catch (\Throwable) {
+            $eventDate = $race->start_date->copy()->startOfDay();
+        }
+
+        $targetDate = $race->start_date->copy()->startOfDay();
+        $daysAgo = $eventDate->diffInDays($targetDate, false);
+        if ($daysAgo < 0) {
+            return ['form_adjustment' => 0.0, 'incident_penalty' => 0.0, 'days_ago' => null];
+        }
+
+        $decayDays = max(1, (int) ($entry['decay_days'] ?? 21));
+        $decayFactor = max(0.0, 1.0 - ($daysAgo / $decayDays));
+
+        $formAdjustment = max(-1.0, min(1.0, (float) ($entry['form_adjustment'] ?? 0.0))) * $decayFactor;
+        $incidentPenalty = max(0.0, min(1.0, (float) ($entry['incident_penalty'] ?? 0.0))) * $decayFactor;
+
+        return [
+            'form_adjustment' => round($formAdjustment, 4),
+            'incident_penalty' => round($incidentPenalty, 4),
+            'days_ago' => $daysAgo,
+        ];
     }
 
     private function applyTeamHierarchyAdjustments(
