@@ -311,19 +311,35 @@ def scrape_youth(slug: str, year: int):
 @router.get("/race/{slug}/{year}/result")
 def scrape_one_day_result(slug: str, year: int):
     """Uitslag van een eendagskoers."""
-    path = f"race/{slug}/{year}/result"
-    try:
-        html = fetch(path)
-        s = Stage(path, html=html, update_html=False)
+    candidate_paths = [
+        f"race/{slug}/{year}/result",
+        f"race/{slug}/{year}/result/live",
+        f"race/{slug}/{year}",
+    ]
+    errors: list[str] = []
 
-        return {
-            "race_slug": slug,
-            "year": year,
-            "result_type": "result",
-            "results": _format_results(s.results(), "result"),
-        }
-    except (ValueError, ExpectedParsingError) as e:
-        raise HTTPException(status_code=404, detail=f"Uitslag niet gevonden: {e}")
+    for path in candidate_paths:
+        try:
+            html = fetch(path)
+            s = Stage(path, html=html, update_html=False)
+            results = _format_results(s.results(), "result")
+            if not results:
+                raise ValueError("Lege uitslag")
+
+            return {
+                "race_slug": slug,
+                "year": year,
+                "result_type": "result",
+                "results": results,
+            }
+        except (ValueError, ExpectedParsingError) as e:
+            errors.append(f"{path}: {e}")
+            continue
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Uitslag niet gevonden via PCS paths: {' | '.join(errors)}"
+    )
 
 
 # ── Rider ─────────────────────────────────────────────────────────────────────
