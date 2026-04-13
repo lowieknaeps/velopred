@@ -1571,6 +1571,35 @@ class VelopredPredictor:
                         if group in {"cobbled", "classic", "hilly"}:
                             pcs_signal_bonus += (elite_generalist - 0.82) * 3.0
 
+                sprinter_mismatch_penalty = 0.0
+                if prediction_type == "result" and group in {"hilly", "classic"}:
+                    # Heuvelklassiekers: pure sprinters zonder bevestigde
+                    # punch/klim-context mogen niet te hoog landen.
+                    hilly_profile = float(np.clip(
+                        speciality_hills_pct[idx] * 0.60
+                        + speciality_climb_pct[idx] * 0.25
+                        + max(0.0, 1.0 - sprint_profile_fit) * 0.15,
+                        0.0,
+                        1.0,
+                    ))
+                    sprinter_bias = max(
+                        0.0,
+                        speciality_sprint_pct[idx] - (speciality_hills_pct[idx] * 0.78 + speciality_climb_pct[idx] * 0.22),
+                    )
+                    low_hilly_context = (
+                        current_year_top10_parcours < 28.0
+                        and recent_top10_parcours < 26.0
+                        and current_year_attack_momentum_parcours < 25.0
+                    )
+                    if sprinter_bias > 0.22 and hilly_profile < 0.52 and low_hilly_context:
+                        sprinter_mismatch_penalty = min(
+                            5.5,
+                            (sprinter_bias - 0.22) * 8.0
+                            + max(0.0, 0.52 - hilly_profile) * 4.8,
+                        )
+                        if pcs_top_rank not in (None, "") and float(pcs_top_rank) <= 15.0:
+                            sprinter_mismatch_penalty *= 0.85
+
                 if abs(race_dynamics_form_adjustment) > 0:
                     # Koersverloop-signaal (bv. pech ondanks sterke koers)
                     # voorkomt dat een ongelukkige uitslag de vorm te hard drukt.
@@ -1599,6 +1628,7 @@ class VelopredPredictor:
                     injury_penalty += race_dynamics_incident_penalty * (
                         3.2 if group in {"cobbled", "classic", "hilly"} else 2.0
                     )
+                injury_penalty += sprinter_mismatch_penalty
 
                 if group in {"cobbled", "classic", "hilly"}:
                     if manual_incident_penalty > 0:
