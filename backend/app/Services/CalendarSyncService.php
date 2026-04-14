@@ -39,6 +39,8 @@ class CalendarSyncService
         'bretagne-classic'          => 'hilly',
         'san-sebastian'             => 'hilly',
         'in-flanders-fields'        => 'cobbled',
+        'brabantse-pijl'            => 'hilly',
+        'de-brabantse-pijl'         => 'hilly',
 
         // ── Grote klassiekers (all-round) ─────────────────────────────────────
         'milano-sanremo'            => 'classic',

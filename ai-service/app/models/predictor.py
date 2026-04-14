@@ -252,7 +252,7 @@ PARCOURS_GROUPS = {
     "hilly":    "hilly",
     "classic":  "classic",
     "flat":     "flat",
-    "tt":       "flat",     # tijdrijders → flat model
+    "tt":       "flat",     
     "mixed":    "default",
     "default":  "default",
 }
@@ -1214,6 +1214,12 @@ class VelopredPredictor:
         pcs_season_top10_pct = self._percentile_scores([r.get("pcs_season_top10_rate") for r in riders], inverse=False, default=0.0)
         pcs_small_race_wins_pct = self._percentile_scores([r.get("pcs_small_race_wins") for r in riders], inverse=False, default=0.0)
         pcs_small_race_top10_pct = self._percentile_scores([r.get("pcs_small_race_top10_rate") for r in riders], inverse=False, default=0.0)
+        hard_sprinter_demote = np.zeros(len(riders), dtype=bool)
+        one_day_default_context = (
+            prediction_type == "result"
+            and group == "default"
+            and float((riders[0].get("race_days", 1) if riders else 1) or 1) <= 1.5
+        )
 
         for idx, rider in enumerate(riders):
             wins_this_race = float(rider.get("wins_this_race", 0) or 0)
@@ -1324,6 +1330,28 @@ class VelopredPredictor:
                     stage_role_penalty += max(0.0, 0.30 - stage_profile_exp) * 4.5
                     stage_role_penalty += max(0.0, 0.72 - stage_speciality_fit) * 24.0
                     stage_role_penalty += max(0.0, climb_profile_fit - sprint_profile_fit) * 8.0
+                    if stage_subtype == "sprint":
+                        # In pure sprintetappes moet het sprintprofiel echt dominant zijn.
+                        sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                        gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                        climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+                        stage_role_penalty += max(0.0, 0.58 - sprint_profile_fit) * 18.0
+                        stage_role_penalty += max(0.0, 0.64 - speciality_sprint_pct[idx]) * 28.0
+                        stage_role_penalty += max(0.0, speciality_climb_pct[idx] - speciality_sprint_pct[idx]) * 10.0
+                        stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.52 - speciality_sprint_pct[idx]) * 34.0
+                        # GC/klimmers horen vrijwel nooit in de top van een sprintetappe.
+                        stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.74) * max(0.0, 0.58 - speciality_sprint_pct[idx]) * 85.0
+                        stage_role_penalty += max(0.0, speciality_climb_pct[idx] - 0.72) * max(0.0, 0.62 - speciality_sprint_pct[idx]) * 55.0
+                        # Absolute guard: zelfs in een zwak sprintveld mag een pure GC/klimmer niet top-10 staan.
+                        if sprint_raw < 0.28 and (gc_raw > 0.45 or climb_raw > 0.55):
+                            stage_role_penalty += 60.0 + (0.28 - sprint_raw) * 80.0
+                    else:
+                        # Reduced sprints belonen punch/hills; pure sprinters zonder punch zakken weg.
+                        stage_role_penalty += max(0.0, 0.50 - speciality_hills_pct[idx]) * 18.0
+                        stage_role_penalty += max(0.0, 0.55 - stage_profile_fit) * 8.0
+                        # Vermijd dat pure GC-types structureel hoog blijven in reduced sprint.
+                        stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.52 - speciality_hills_pct[idx]) * 22.0
+                        stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.56 - sprint_profile_fit) * 14.0
                     if current_year_avg_stage_subtype not in (None, ""):
                         stage_role_penalty += max(0.0, float(current_year_avg_stage_subtype) - 20.0) * 0.82
                     if avg_stage_subtype not in (None, ""):
@@ -1337,11 +1365,20 @@ class VelopredPredictor:
                     stage_role_penalty += max(0.0, 0.25 - stage_profile_exp) * 3.0
                     stage_role_penalty += max(0.0, 0.68 - stage_speciality_fit) * 18.0
                     stage_role_penalty += max(0.0, sprint_profile_fit - climb_profile_fit) * 5.0
+                    if stage_subtype == "high_mountain":
+                        stage_role_penalty += max(0.0, 0.60 - climb_profile_fit) * 16.0
+                        stage_role_penalty += max(0.0, 0.62 - speciality_climb_pct[idx]) * 26.0
+                        stage_role_penalty += max(0.0, speciality_sprint_pct[idx] - speciality_climb_pct[idx]) * 8.0
+                    else:
+                        stage_role_penalty += max(0.0, 0.56 - climb_profile_fit) * 12.0
+                        stage_role_penalty += max(0.0, 0.58 - speciality_climb_pct[idx]) * 18.0
                 elif stage_subtype in {"tt", "ttt"}:
                     stage_role_penalty += max(0.0, 0.55 - stage_profile_fit) * 10.0
                     stage_role_penalty += max(0.0, 0.20 - stage_profile_exp) * 2.5
                     stage_role_penalty += max(0.0, 0.68 - stage_speciality_fit) * 16.0
                     stage_role_penalty += max(0.0, sprint_profile_fit - tt_profile_fit) * 3.0
+                    stage_role_penalty += max(0.0, 0.58 - tt_profile_fit) * 14.0
+                    stage_role_penalty += max(0.0, 0.62 - speciality_tt_pct[idx]) * 22.0
 
             parcours_penalty = 0.0
             if prediction_type == "stage":
@@ -1571,10 +1608,33 @@ class VelopredPredictor:
                         if group in {"cobbled", "classic", "hilly"}:
                             pcs_signal_bonus += (elite_generalist - 0.82) * 3.0
 
+                    # Young-talent breakout: jonge renners met sterke huidige vorm
+                    # mogen niet structureel laag eindigen door beperkte historiek.
+                    age_value = None if rider_age in (None, "") else float(rider_age)
+                    current_year_avg_value = None if current_year_avg in (None, "") else float(current_year_avg)
+                    if (
+                        age_value is not None
+                        and age_value <= 21.8
+                        and current_year_avg_value is not None
+                        and current_year_results_count >= 4.0
+                    ):
+                        breakout_strength = (
+                            max(0.0, 18.0 - current_year_avg_value) * 0.38
+                            + max(0.0, float(current_year_top10) - 30.0) * 0.05
+                            + max(0.0, float(current_year_top10_parcours) - 30.0) * 0.04
+                            + max(0.0, float(current_year_attack_momentum) - 28.0) * 0.04
+                        )
+                        if current_year_avg_value <= 12.0:
+                            breakout_strength += 0.9
+                        pcs_signal_bonus += min(5.5, breakout_strength)
+
                 sprinter_mismatch_penalty = 0.0
-                if prediction_type == "result" and group in {"hilly", "classic"}:
+                if prediction_type == "result" and (group in {"hilly", "classic"} or one_day_default_context):
                     # Heuvelklassiekers: pure sprinters zonder bevestigde
                     # punch/klim-context mogen niet te hoog landen.
+                    sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                    hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
+                    climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
                     hilly_profile = float(np.clip(
                         speciality_hills_pct[idx] * 0.60
                         + speciality_climb_pct[idx] * 0.25
@@ -1586,19 +1646,51 @@ class VelopredPredictor:
                         0.0,
                         speciality_sprint_pct[idx] - (speciality_hills_pct[idx] * 0.78 + speciality_climb_pct[idx] * 0.22),
                     )
+                    raw_sprinter_bias = max(0.0, sprint_raw - (hills_raw * 0.84 + climb_raw * 0.16))
+                    avg_position_parcours_raw = rider.get("avg_position_parcours")
+                    avg_position_parcours_value = float(avg_position_parcours_raw) if avg_position_parcours_raw not in (None, "") else 99.0
                     low_hilly_context = (
-                        current_year_top10_parcours < 28.0
-                        and recent_top10_parcours < 26.0
-                        and current_year_attack_momentum_parcours < 25.0
+                        current_year_top10_parcours < 34.0
+                        and recent_top10_parcours < 32.0
+                        and current_year_attack_momentum_parcours < 31.0
+                        and avg_position_parcours_value > 20.0
                     )
-                    if sprinter_bias > 0.22 and hilly_profile < 0.52 and low_hilly_context:
+                    if sprinter_bias > 0.16 and hilly_profile < 0.62 and low_hilly_context:
                         sprinter_mismatch_penalty = min(
-                            5.5,
-                            (sprinter_bias - 0.22) * 8.0
-                            + max(0.0, 0.52 - hilly_profile) * 4.8,
+                            11.5 if group == "hilly" else 8.0,
+                            (sprinter_bias - 0.16) * (14.0 if group == "hilly" else 10.5)
+                            + max(0.0, 0.62 - hilly_profile) * (9.5 if group == "hilly" else 6.8),
                         )
+                        if group == "hilly" and speciality_sprint_pct[idx] >= 0.72 and speciality_hills_pct[idx] <= 0.45:
+                            sprinter_mismatch_penalty += 1.35
                         if pcs_top_rank not in (None, "") and float(pcs_top_rank) <= 15.0:
-                            sprinter_mismatch_penalty *= 0.85
+                            sprinter_mismatch_penalty *= 0.92
+
+                    # Absolute PCS-speciality guard: voorkomt dat pure sprinters
+                    # in heuvelklassiekers boven punchers/allrounders worden gezet
+                    # door gunstige veldpercentielen.
+                    if group in {"hilly", "classic"} or one_day_default_context:
+                        if (
+                            raw_sprinter_bias > 0.20
+                            and hills_raw < 0.45
+                            and climb_raw < 0.32
+                            and current_year_top10_parcours < 45.0
+                        ):
+                            sprinter_mismatch_penalty += min(
+                                10.5 if group == "hilly" else 8.5,
+                                (raw_sprinter_bias - 0.20) * (30.0 if group == "hilly" else 24.0)
+                                + max(0.0, 0.45 - hills_raw) * (12.0 if group == "hilly" else 9.5),
+                            )
+                            if sprint_raw >= 0.50 and hills_raw <= 0.30:
+                                sprinter_mismatch_penalty += 2.1 if group == "hilly" else 1.6
+                        if (
+                            raw_sprinter_bias > 0.27
+                            and hills_raw < 0.34
+                            and climb_raw < 0.18
+                            and current_year_attack_momentum_parcours < 35.0
+                        ):
+                            sprinter_mismatch_penalty += 18.0 if group == "hilly" else 14.0
+                            hard_sprinter_demote[idx] = True
 
                 if abs(race_dynamics_form_adjustment) > 0:
                     # Koersverloop-signaal (bv. pech ondanks sterke koers)
@@ -1719,6 +1811,10 @@ class VelopredPredictor:
                             0.30,
                             1.0,
                         ))
+                        # U23/neo-pro: kleine sample is normaal, dus minder straf.
+                        age_value = None if rider_age in (None, "") else float(rider_age)
+                        if age_value is not None and age_value <= 22.5:
+                            mitigation *= 0.72
                         injury_penalty += sample_gap_penalty * mitigation
 
                     # Finale-conversie in klassiekers:
@@ -1774,6 +1870,16 @@ class VelopredPredictor:
                 adjusted_scores[idx] -= field_bonus
 
         order    = np.argsort(adjusted_scores)
+        if (
+            prediction_type == "result"
+            and (group in {"hilly", "classic"} or one_day_default_context)
+            and np.any(hard_sprinter_demote)
+        ):
+            # Veiligheidsnet: pure sprinters met zware mismatch horen niet in de
+            # topfavorieten van heuvelklassiekers terecht te komen.
+            flagged = [int(i) for i in order if hard_sprinter_demote[i]]
+            if flagged:
+                order = np.array([int(i) for i in order if not hard_sprinter_demote[i]] + flagged, dtype=int)
         n        = len(scores)
 
         score_std = max(float(np.std(adjusted_scores)), 1.0)

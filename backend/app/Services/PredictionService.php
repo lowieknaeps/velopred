@@ -18,6 +18,13 @@ use Illuminate\Support\Facades\Log;
  */
 class PredictionService
 {
+    /**
+     * Per race/subtype keep track of previously predicted stage favourites.
+     * Used to avoid "same winner every stage" artifacts.
+     *
+     * @var array<string, array<string,int>>
+     */
+    private array $stageFavouriteCounts = [];
     const CURRENT_YEAR_BOOST = 3.0;  // huidig jaar: 3x gewicht
     const DECAY              = 0.45; // voor jaren daarvoor
     const MIN_YEAR           = 2019;
@@ -39,6 +46,7 @@ class PredictionService
     public function predictRace(Race $race): int
     {
         Log::info("[Prediction] Start: {$race->name} {$race->year}");
+        $this->stageFavouriteCounts = [];
 
         $riderIds = $this->getPredictionRiderIds($race);
 
@@ -108,6 +116,12 @@ class PredictionService
                 $race,
                 $featuresBySlug,
                 $context['prediction_type'],
+            );
+            $predictions = $this->applyStageDiversityAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
             );
             $savedRiderIds = [];
 
@@ -188,8 +202,215 @@ class PredictionService
             Log::info("[Prediction] {$race->name} {$race->year} {$context['prediction_type']} {$context['stage_number']}: " . count($predictions));
         }
 
+        if ($race->isStageRace()) {
+            $this->refreshStageRaceClassificationsFromStages($race);
+        }
+
         Log::info("[Prediction] {$saved} voorspellingen opgeslagen voor {$race->name}");
         return $saved;
+    }
+
+    private function refreshStageRaceClassificationsFromStages(Race $race): void
+    {
+        $stages = is_array($race->stages_json) ? $race->stages_json : [];
+        if (empty($stages)) {
+            return;
+        }
+
+        $stageSubtypesByNumber = collect($stages)
+            ->mapWithKeys(fn (array $s) => [(int) ($s['number'] ?? 0) => (string) ($s['stage_subtype'] ?? '')])
+            ->filter(fn ($v, $k) => (int) $k > 0 && $v !== '')
+            ->all();
+
+        if (empty($stageSubtypesByNumber)) {
+            return;
+        }
+
+        $stagePredictions = Prediction::query()
+            ->where('race_id', $race->id)
+            ->where('prediction_type', 'stage')
+            ->where('stage_number', '>', 0)
+            ->get(['id', 'rider_id', 'stage_number', 'win_probability', 'top10_probability']);
+
+        if ($stagePredictions->isEmpty()) {
+            return;
+        }
+
+        $gcPredictionsByRider = Prediction::query()
+            ->where('race_id', $race->id)
+            ->where('prediction_type', 'gc')
+            ->where('stage_number', 0)
+            ->get(['rider_id', 'predicted_position', 'win_probability'])
+            ->keyBy('rider_id');
+
+        $pointsScores = [];
+        $komScores = [];
+
+        foreach ($stagePredictions as $pred) {
+            $stageNr = (int) $pred->stage_number;
+            $subtype = $stageSubtypesByNumber[$stageNr] ?? '';
+            if ($subtype === '') {
+                continue;
+            }
+
+            $riderId = (int) $pred->rider_id;
+            $win = (float) ($pred->win_probability ?? 0.0);
+            $top10 = (float) ($pred->top10_probability ?? 0.0);
+
+            if (in_array($subtype, ['sprint', 'reduced_sprint'], true)) {
+                $w = $subtype === 'sprint' ? 1.00 : 0.72;
+                $pointsScores[$riderId] = ($pointsScores[$riderId] ?? 0.0) + $w * (($win * 110.0) + ($top10 * 30.0));
+            }
+
+            if (in_array($subtype, ['summit_finish', 'high_mountain'], true)) {
+                $w = $subtype === 'high_mountain' ? 1.00 : 0.78;
+                $komScores[$riderId] = ($komScores[$riderId] ?? 0.0) + $w * (($win * 95.0) + ($top10 * 26.0));
+            }
+        }
+
+        if (!empty($pointsScores)) {
+            $this->upsertClassificationFromScores($race, 'points', $pointsScores);
+        }
+
+        if (!empty($komScores)) {
+            // KOM should favour strong climbers not going for GC.
+            foreach ($komScores as $riderId => $score) {
+                $gcPos = (int) ($gcPredictionsByRider->get($riderId)?->predicted_position ?? 999);
+                $gcWin = (float) ($gcPredictionsByRider->get($riderId)?->win_probability ?? 0.0);
+                $mult = 1.0;
+                if ($gcPos <= 2) {
+                    $mult = 0.18;
+                } elseif ($gcPos <= 3) {
+                    $mult = 0.28;
+                } elseif ($gcPos <= 5) {
+                    $mult = 0.45;
+                } elseif ($gcPos <= 10) {
+                    $mult = 0.70;
+                } elseif ($gcPos <= 15) {
+                    $mult = 0.85;
+                }
+                if ($gcWin >= 0.12) {
+                    $mult *= 0.55;
+                } elseif ($gcWin >= 0.06) {
+                    $mult *= 0.75;
+                }
+                $komScores[$riderId] = $score * $mult;
+            }
+            $this->upsertClassificationFromScores($race, 'kom', $komScores);
+        }
+    }
+
+    private function upsertClassificationFromScores(Race $race, string $type, array $scoresByRiderId): void
+    {
+        if (empty($scoresByRiderId)) {
+            return;
+        }
+
+        arsort($scoresByRiderId);
+        $riderIds = array_keys($scoresByRiderId);
+        $n = max(1, count($riderIds));
+
+        // Convert scores to a probability distribution (softmax-ish, stable).
+        $scores = array_values($scoresByRiderId);
+        $max = max($scores);
+        $exp = array_map(fn ($s) => exp(($s - $max) / 18.0), $scores);
+        $sum = array_sum($exp) ?: 1.0;
+
+        DB::transaction(function () use ($race, $type, $riderIds, $exp, $sum, $n) {
+            foreach ($riderIds as $i => $riderId) {
+                $winProb = (float) ($exp[$i] / $sum);
+                $top10Prob = (float) max(0.02, min(0.95, exp(-$i * 0.12) * 0.85));
+
+                $record = Prediction::updateOrCreate(
+                    [
+                        'race_id' => $race->id,
+                        'rider_id' => (int) $riderId,
+                        'prediction_type' => $type,
+                        'stage_number' => 0,
+                    ],
+                    [
+                        'model_version' => (string) (Prediction::where('race_id', $race->id)->value('model_version') ?? 'v1'),
+                        'predicted_position' => $i + 1,
+                        'top10_probability' => $top10Prob,
+                        'raw_top10_probability' => $top10Prob,
+                        'win_probability' => $winProb,
+                        'raw_win_probability' => $winProb,
+                        'confidence_score' => 0.70,
+                        'features' => [
+                            'derived_from_stages' => true,
+                            'stage_race_classification' => $type,
+                        ],
+                    ]
+                );
+                $record->touch();
+            }
+        });
+    }
+
+    private function applyStageDiversityAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || count($predictions) < 2) {
+            return $predictions;
+        }
+
+        $stageSubtype = (string) ($context['stage_subtype'] ?? '');
+        if ($stageSubtype === '') {
+            return $predictions;
+        }
+
+        // Only apply to sprint-like stages where the repetition artifact is most visible.
+        if (!in_array($stageSubtype, ['sprint', 'reduced_sprint'], true)) {
+            return $predictions;
+        }
+
+        $raceKey = $race->id . ':' . $stageSubtype;
+        $counts = $this->stageFavouriteCounts[$raceKey] ?? [];
+
+        foreach ($predictions as $i => $pred) {
+            $slug = (string) ($pred['rider_slug'] ?? '');
+            if ($slug === '' || !isset($counts[$slug]) || $counts[$slug] <= 0) {
+                continue;
+            }
+
+            $prev = (int) $counts[$slug];
+            $factor = max(0.40, pow(0.70, $prev));
+            $predictions[$i]['win_probability'] = max(0.0, min(1.0, (float) ($pred['win_probability'] ?? 0.0) * $factor));
+            $predictions[$i]['top10_probability'] = max(0.0, min(1.0, (float) ($pred['top10_probability'] ?? 0.0) * (0.92 + ($factor * 0.08))));
+        }
+
+        // Re-sort and re-rank after adjustment.
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        // Update favourite counts for next stages of the same subtype.
+        $winnerSlug = (string) ($predictions[0]['rider_slug'] ?? '');
+        if ($winnerSlug !== '') {
+            $counts[$winnerSlug] = (int) ($counts[$winnerSlug] ?? 0) + 1;
+            $this->stageFavouriteCounts[$raceKey] = $counts;
+        }
+
+        return $predictions;
     }
 
     public function refreshRaceIfStale(Race $race): bool
@@ -2284,6 +2505,44 @@ class PredictionService
                 min(1.0, max(0.0, (float) ($features['current_year_attack_momentum_rate_parcours'] ?? 0.0) / 100.0)) * 0.7
                 + min(1.0, max(0.0, (float) ($features['current_year_close_finish_rate_parcours'] ?? 0.0) / 100.0)) * 0.3
             );
+            $age = isset($features['age']) && is_numeric($features['age']) ? (float) $features['age'] : null;
+            $currentYearAvg = isset($features['current_year_avg_position']) && is_numeric($features['current_year_avg_position'])
+                ? (float) $features['current_year_avg_position']
+                : null;
+            $sprintSpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_sprint'] ?? 0.0) / 10000.0));
+            $hillsSpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_hills'] ?? 0.0) / 10000.0));
+            $climbSpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_climber'] ?? 0.0) / 10000.0));
+            $oneDaySpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_one_day'] ?? 0.0) / 10000.0));
+            $parcoursTop10Rate = max(0.0, min(100.0, (float) ($features['current_year_top10_rate_parcours'] ?? 0.0)));
+            $avgParcoursPosition = isset($features['avg_position_parcours']) && is_numeric($features['avg_position_parcours'])
+                ? (float) $features['avg_position_parcours']
+                : 99.0;
+            $parcoursResultsCount = max(0.0, (float) ($features['parcours_results_count'] ?? 0.0));
+            $currentYearResultsCount = max(0.0, (float) ($features['current_year_results_count'] ?? 0.0));
+            $classicFit = min(
+                1.0,
+                max(
+                    0.0,
+                    ($hillsSpeciality * 0.55) + ($climbSpeciality * 0.25) + ($oneDaySpeciality * 0.20)
+                )
+            );
+            $pureSprinterClassicMismatch = $isClassicLike
+                && $sprintSpeciality >= 0.48
+                && $hillsSpeciality <= 0.34
+                && $climbSpeciality <= 0.20
+                && $scenario < 0.45
+                && $avgParcoursPosition > 20.0
+                && ($sprintSpeciality - (($hillsSpeciality * 0.85) + ($climbSpeciality * 0.15))) > 0.20;
+            $lowClassicProfileMismatch = $isClassicLike
+                && $classicFit < 0.18
+                && $scenario < 0.32
+                && $oneDaySpeciality < 0.36
+                && $parcoursResultsCount <= 2.0
+                && $currentYearResultsCount <= 3.0;
+            $weakClassicProfile = $isClassicLike
+                && $classicFit < 0.14
+                && $oneDaySpeciality < 0.34
+                && $scenario < 0.50;
             $recentOneDayPosition = isset($features['recent_one_day_position']) && is_numeric($features['recent_one_day_position'])
                 ? (int) $features['recent_one_day_position']
                 : null;
@@ -2299,10 +2558,39 @@ class PredictionService
                 && $recentOneDayPosition <= 10
                 && $recentOneDayDaysAgo !== null
                 && $recentOneDayDaysAgo <= 10;
+            if ($freshPodiumSignal) {
+                $weakClassicProfile = false;
+            }
+
+            $youngTalentBreakthrough = $isClassicLike
+                && $age !== null
+                && $age <= 21.8
+                && $currentYearAvg !== null
+                && $currentYearAvg <= 12.0
+                && $currentYearResultsCount >= 4.0;
+            if ($youngTalentBreakthrough) {
+                // U23's met duidelijke topvorm mogen niet door generieke caps
+                // als "zwak klassiekerprofiel" worden platgeslagen.
+                $weakClassicProfile = false;
+                $lowClassicProfileMismatch = false;
+            }
 
             $coreContender = $careerPct >= 0.90 && ($momentum >= 0.45 || $scenario >= 0.45 || $freshPodiumSignal);
             $eliteFallbackContender = $careerPct >= 0.97 && $seasonDom >= 0.62 && $recentPct >= 0.58;
             $eliteGeneralistContender = $careerPct >= 0.985 && $recentPct >= 0.60 && $seasonDom >= 0.60;
+
+            if ($pureSprinterClassicMismatch) {
+                $coreContender = false;
+                $eliteFallbackContender = false;
+                $eliteGeneralistContender = false;
+            }
+            if ($lowClassicProfileMismatch) {
+                $eliteFallbackContender = false;
+                $eliteGeneralistContender = false;
+            }
+            if ($weakClassicProfile) {
+                $eliteGeneralistContender = false;
+            }
 
             if ($coreContender || $eliteFallbackContender) {
                 $boostFactor = 1.0
@@ -2355,6 +2643,15 @@ class PredictionService
                 $boostFactor = min(2.25, $boostFactor);
             } else {
                 $boostFactor = 1.0 + ($momentum * 0.06) + ($scenario * 0.03);
+                if ($pureSprinterClassicMismatch) {
+                    $boostFactor *= 0.42;
+                }
+                if ($lowClassicProfileMismatch) {
+                    $boostFactor *= 0.58;
+                }
+                if ($weakClassicProfile) {
+                    $boostFactor *= 0.70;
+                }
             }
 
             if ($eliteGeneralistContender) {
@@ -2367,11 +2664,32 @@ class PredictionService
                     $boostFactor += 0.10;
                 }
             }
+            if ($youngTalentBreakthrough) {
+                $boostFactor += 0.16 + max(0.0, (12.0 - $currentYearAvg)) * 0.012;
+                $boostFactor = min(2.35, $boostFactor);
+            }
 
             $currentWin = (float) ($prediction['win_probability'] ?? 0.0);
             $currentTop10 = (float) ($prediction['top10_probability'] ?? 0.0);
             $newWin = max(0.0, min(1.0, $currentWin * $boostFactor));
             $newTop10 = max(0.0, min(0.98, $currentTop10 * (1.0 + (($boostFactor - 1.0) * 0.45))));
+
+            if ($pureSprinterClassicMismatch) {
+                // Pure sprinters zonder heuvel-/klassiekerfit mogen in
+                // klassieke eendagskoersen niet als topfavoriet blijven staan.
+                $newWin = min($newWin, 0.018);
+                $newTop10 = min($newTop10, 0.22);
+            }
+            if ($lowClassicProfileMismatch) {
+                // Voorkom dat mini-sample top-10 rates (bv. 1/1 = 100%)
+                // klassieke ranking onrealistisch hoog trekken.
+                $newWin = min($newWin, 0.028);
+                $newTop10 = min($newTop10, 0.42);
+            }
+            if ($weakClassicProfile) {
+                $newWin = min($newWin, 0.022);
+                $newTop10 = min($newTop10, 0.36);
+            }
 
             if ($eliteFallbackContender) {
                 $eliteFloor = 0.055 + max(0.0, ($careerPct - 0.97)) * 0.22 + max(0.0, ($recentPct - 0.58)) * 0.08;

@@ -56,6 +56,7 @@ class RaceSyncService
     private function syncRaceMeta(string $slug, int $year): Race
     {
         $data = $this->api->getRace($slug, $year);
+        $parcoursType = \App\Services\CalendarSyncService::PARCOURS_MAP[$slug] ?? ($data['parcours_type'] ?? 'mixed');
 
         $race = Race::updateOrCreate(
             ['pcs_slug' => $slug, 'year' => $year],
@@ -66,7 +67,7 @@ class RaceSyncService
                 'country'       => $data['country'],
                 'category'      => $data['category'],
                 'race_type'     => $data['race_type'],
-                'parcours_type' => $data['parcours_type'],
+                'parcours_type' => $parcoursType,
                 'stages_json'   => $data['stages'] ?? null,
                 'synced_at'     => now(),
             ]

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -177,7 +178,16 @@ class ExternalCyclingApiService
 
     private function get(string $path): array
     {
-        $response = Http::timeout(30)->get($this->baseUrl . $path);
+        try {
+            $response = Http::retry([300, 800, 1500], throw: false)
+                ->timeout(30)
+                ->get($this->baseUrl . $path);
+        } catch (ConnectionException $e) {
+            throw new RuntimeException(
+                "AI-service niet bereikbaar voor {$path}: {$e->getMessage()}",
+                previous: $e
+            );
+        }
 
         if ($response->status() === 404) {
             throw new RuntimeException("Niet gevonden op PCS: {$path}");
