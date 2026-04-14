@@ -1409,6 +1409,16 @@ class VelopredPredictor:
                     stage_role_penalty += max(0.0, 0.58 - tt_profile_fit) * 14.0
                     stage_role_penalty += max(0.0, 0.62 - speciality_tt_pct[idx]) * 22.0
 
+                    # Absolute TT guard: renners zonder TT-profiel (bv. sprinters) horen nooit
+                    # in de top van een tijdrit te staan, zelfs niet in een zwak/klein veld.
+                    tt_raw = float(rider.get("pcs_speciality_tt", 0) or 0) / 10000.0
+                    sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                    gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+
+                    if tt_raw < 0.22 and (sprint_raw > 0.55 or gc_raw > 0.45 or climb_raw > 0.55):
+                        stage_role_penalty += 55.0 + (0.22 - tt_raw) * 90.0
+
             parcours_penalty = 0.0
             if prediction_type == "stage":
                 if stage_subtype == "sprint":
