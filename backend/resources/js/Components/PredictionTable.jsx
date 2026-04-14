@@ -1,3 +1,5 @@
+import { Link } from '@inertiajs/react';
+
 function PositionBadge({ pos }) {
     const base = 'inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold';
 
@@ -45,7 +47,16 @@ export default function PredictionTable({ predictions = [], entries = null, show
                                 <PositionBadge pos={prediction.position} />
                             </td>
                             <td className="py-3 font-medium text-slate-900">
-                                {prediction.rider}
+                                {prediction.rider_slug ? (
+                                    <Link
+                                        href={`/riders/${prediction.rider_slug}`}
+                                        className="hover:text-indigo-700 hover:underline"
+                                    >
+                                        {prediction.rider}
+                                    </Link>
+                                ) : (
+                                    prediction.rider
+                                )}
                                 {showActual && <ActualBadge actual={prediction.actual_position} predicted={prediction.position} />}
                             </td>
                             <td className="hidden py-3 text-slate-500 sm:table-cell">{prediction.team}</td>

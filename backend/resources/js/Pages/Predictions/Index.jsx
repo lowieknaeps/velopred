@@ -1,4 +1,5 @@
 import { Head, Link, router } from '@inertiajs/react';
+import { useMemo, useState } from 'react';
 import PredictionEvaluationPanel from '../../Components/PredictionEvaluationPanel';
 import PredictionTable from '../../Components/PredictionTable';
 import SectionHeading from '../../Components/SectionHeading';
@@ -13,9 +14,28 @@ export default function PredictionsIndex({
     availableRaces = [],
     otherRaces = [],
 }) {
+    const [query, setQuery] = useState('');
+    const [isSwitchingRace, setIsSwitchingRace] = useState(false);
+
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
     const selectedRaceSlug = availableRaces.find((option) => option.is_selected)?.slug ?? '';
+
+    const normalizedQuery = query.trim().toLowerCase();
+    const filteredPredictions = useMemo(() => {
+        if (!normalizedQuery) return predictions;
+        return predictions.filter((row) => (row.rider ?? '').toLowerCase().includes(normalizedQuery));
+    }, [normalizedQuery, predictions]);
+
+    const filteredExtraGroups = useMemo(() => {
+        if (!normalizedQuery) return extraGroups;
+        return extraGroups
+            .map((group) => ({
+                ...group,
+                predictions: (group.predictions ?? []).filter((row) => (row.rider ?? '').toLowerCase().includes(normalizedQuery)),
+            }))
+            .filter((group) => (group.predictions ?? []).length > 0);
+    }, [normalizedQuery, extraGroups]);
 
     function handleRaceChange(event) {
         const nextRace = event.target.value;
@@ -26,6 +46,8 @@ export default function PredictionsIndex({
             {
                 preserveScroll: true,
                 preserveState: true,
+                onStart: () => setIsSwitchingRace(true),
+                onFinish: () => setIsSwitchingRace(false),
             },
         );
     }
@@ -43,7 +65,7 @@ export default function PredictionsIndex({
 
                 {race && (
                     <div className="flex flex-wrap items-center justify-between gap-4">
-                                <div className="flex flex-wrap items-center gap-3">
+                        <div className="flex flex-wrap items-center gap-3">
                             <h2 className="font-display text-2xl font-semibold text-slate-950">{race.name}</h2>
                             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
                                 {race.date}
@@ -82,7 +104,8 @@ export default function PredictionsIndex({
                                         <select
                                             value={selectedRaceSlug}
                                             onChange={handleRaceChange}
-                                            className="appearance-none bg-transparent pl-0 pr-5 text-sm font-medium text-slate-900 outline-none cursor-pointer"
+                                            disabled={isSwitchingRace}
+                                            className="appearance-none bg-transparent pl-0 pr-5 text-sm font-medium text-slate-900 outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             {availableRaces.map((option) => (
                                                 <option key={option.slug} value={option.slug}>
@@ -113,6 +136,47 @@ export default function PredictionsIndex({
                     <div className="flex flex-wrap gap-3 text-xs text-slate-400">
                         {race.startlist_synced_at && <span>Startlijst ververst: {race.startlist_synced_at}</span>}
                         {race.prediction_updated_at && <span>Voorspellingen vernieuwd: {race.prediction_updated_at}</span>}
+                        {isSwitchingRace && <span className="font-semibold text-indigo-600">Bezig met laden…</span>}
+                    </div>
+                )}
+
+                {hasPredictions && (
+                    <div className="vp-panel p-4">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex items-center gap-2">
+                                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+                                    Snelle filter
+                                </div>
+                                {normalizedQuery && (
+                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                                        {filteredPredictions.length}/10
+                                    </span>
+                                )}
+                            </div>
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                                <input
+                                    value={query}
+                                    onChange={(event) => setQuery(event.target.value)}
+                                    placeholder="Zoek renner (bv. Van Aert)…"
+                                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 sm:w-72"
+                                />
+                                <div className="flex flex-wrap gap-2">
+                                    <a href="#top10" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200">
+                                        Top 10
+                                    </a>
+                                    {extraGroups.length > 0 && (
+                                        <a href="#extra" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200">
+                                            Ritten/klassementen
+                                        </a>
+                                    )}
+                                    {scenarios.length > 0 && (
+                                        <a href="#scenarios" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200">
+                                            Scenario&apos;s
+                                        </a>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 )}
 
@@ -129,7 +193,7 @@ export default function PredictionsIndex({
                 <div className="grid gap-8 lg:grid-cols-[1fr_280px]">
                     <div className="space-y-8">
                         {hasPredictions && (
-                            <section className="vp-panel p-6">
+                            <section id="top10" className="vp-panel scroll-mt-24 p-6">
                                 <div className="mb-6 flex items-center justify-between gap-4">
                                     <div>
                                         <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
@@ -144,7 +208,7 @@ export default function PredictionsIndex({
                                     </span>
                                 </div>
 
-                                <PredictionTable predictions={predictions} showActual={race?.has_results} />
+                                <PredictionTable predictions={filteredPredictions} showActual={race?.has_results} />
 
                                 {race?.has_results && (
                                     <div className="mt-6 flex flex-wrap gap-4 border-t border-slate-100 pt-4 text-xs text-slate-400">
@@ -161,10 +225,10 @@ export default function PredictionsIndex({
                         )}
 
                         {extraGroups.length > 0 && (
-                            <section className="space-y-4">
+                            <section id="extra" className="space-y-4 scroll-mt-24">
                                 <h3 className="font-display text-xl font-semibold text-slate-950">Ritten en klassementen</h3>
                                 <div className="grid gap-4 xl:grid-cols-2">
-                                    {extraGroups.map((group) => (
+                                    {filteredExtraGroups.map((group) => (
                                         <article key={group.key} className="vp-panel p-6">
                                             <div className="mb-4 flex items-center justify-between gap-3">
                                                 <div>
@@ -184,7 +248,7 @@ export default function PredictionsIndex({
                         )}
 
                         {scenarios.length > 0 && (
-                            <section className="space-y-4">
+                            <section id="scenarios" className="space-y-4 scroll-mt-24">
                                 <h3 className="font-display text-xl font-semibold text-slate-950">Koersscenario&apos;s</h3>
                                 <div className="grid gap-4 lg:grid-cols-3">
                                     {scenarios.map((scenario, index) => (
@@ -206,7 +270,7 @@ export default function PredictionsIndex({
                     </div>
 
                     {otherRaces.length > 0 && (
-                        <aside className="space-y-3">
+                        <aside className="space-y-3 lg:sticky lg:top-24 lg:self-start">
                             <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
                                 Andere koersen
                             </div>
