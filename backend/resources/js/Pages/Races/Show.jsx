@@ -301,6 +301,9 @@ export default function RacesShow({
                                         <div>
                                             <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Voorspellingscontext</div>
                                             <h3 className="mt-2 font-display text-xl font-semibold tracking-tight text-slate-950">{group.title}</h3>
+                                            {group.subtitle && (
+                                                <div className="mt-2 text-sm font-semibold text-slate-600">{group.subtitle}</div>
+                                            )}
                                         </div>
                                         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                                             Top 10

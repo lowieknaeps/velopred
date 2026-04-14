@@ -5,12 +5,37 @@ import RiderCard from '../Components/RiderCard';
 import SectionHeading from '../Components/SectionHeading';
 import AppLayout from '../Layouts/AppLayout';
 
-const stats = [
-    { label: 'Signalen', value: '180+', detail: 'Parcours-, vorm- en startlijstinformatie die constant wordt ververst.' },
-    { label: 'Uitlegbaarheid', value: '92%', detail: 'Geen black box: elke positie-verschuiwing toont een duidelijke reden.' },
-    { label: 'Refresh', value: '5 min', detail: 'Startlijsten en voorspellingen worden om de vijf minuten opnieuw doorgerekend.' },
-    { label: 'Kernschermen', value: '3', detail: 'Koersen, renners en voorspellingen blijven in één consistente flow gekoppeld.' },
-];
+function buildStats(evaluationSummary) {
+    const latest = evaluationSummary?.latest ?? null;
+    const recent = evaluationSummary?.recent ?? null;
+
+    const lastRaceLabel = latest?.race?.name ? `Laatste evaluatie: ${latest.race.name}${latest.race.date ? ` (${latest.race.date})` : ''}.` : 'Laatste evaluatie.';
+    const evaluatedAt = latest?.evaluated_at ? `Bijgewerkt: ${latest.evaluated_at}.` : '';
+    const recentWindow = recent?.count ? `Gemiddeld over de laatste ${recent.count} koersen.` : '';
+
+    return [
+        {
+            label: 'Top-10 hit',
+            value: latest ? `${latest.top10_hits}/10` : '–',
+            detail: `${lastRaceLabel} ${recentWindow}`.trim(),
+        },
+        {
+            label: 'Exacte plaatsen',
+            value: latest ? `${latest.exact_hits}` : '–',
+            detail: latest?.mae !== null && latest?.mae !== undefined ? `Gemiddelde fout (MAE) in top-10: ${latest.mae}. ${evaluatedAt}`.trim() : evaluatedAt || 'Meet hoe vaak de plaats exact klopt binnen de top-10.',
+        },
+        {
+            label: 'Winnaar juist',
+            value: latest ? (latest.winner_hit ? 'Ja' : 'Nee') : '–',
+            detail: recent?.winner_hit_rate_pct !== undefined ? `Winnaar-hit rate (laatste ${recent.count}): ${recent.winner_hit_rate_pct}%.` : 'Geeft aan of de voorspelde #1 ook won.',
+        },
+        {
+            label: 'Model',
+            value: 'Live',
+            detail: 'Startlijsten, resultaten en voorspellingen worden automatisch gesynchroniseerd zodra nieuwe data beschikbaar is.',
+        },
+    ];
+}
 
 const features = [
     {
@@ -58,13 +83,13 @@ const fallbackLiveBoard = {
     entries: fallbackHeroPredictions,
 };
 
-const featuredRaces = [
+const featuredRacesFallback = [
     { slug: 'ronde-van-vlaanderen', name: 'Ronde van Vlaanderen', category: 'Monument', date: '07 apr', summary: 'Kasseistroken, korte hellingen en positionering in de finale bepalen hier de selectie.', distance: '273 km', terrain: 'Kasseien', confidence: '91%', topPick: 'Van der Poel' },
     { slug: 'amstel-gold-race', name: 'Amstel Gold Race', category: 'Klassieker', date: '21 apr', summary: 'Een punchy profiel waar herhaalde versnellingen renners zonder elastiek uit de koers duwen.', distance: '253 km', terrain: 'Heuvelachtig', confidence: '88%', topPick: 'Pogacar' },
     { slug: 'liege-bastogne-liege', name: 'Luik-Bastenaken-Luik', category: 'Monument', date: '28 apr', summary: 'Een lange krachtmeting waarin klimvermogen, timing en vermoeidheidsweerstand het verschil maken.', distance: '258 km', terrain: 'Heuvelachtig', confidence: '93%', topPick: 'Evenepoel' },
 ];
 
-const featuredRiders = [
+const featuredRidersFallback = [
     { slug: 'mathieu-van-der-poel', name: 'Mathieu van der Poel', team: 'Alpecin-Deceuninck', profile: 'Aanvallende klassiekerspecialist met elite punch en positionering.', rating: '98', strength: 'Explosieve klassiekers', modelFit: 'Sterk op selectieve eendagskoersen', trend: '3 podiumplaatsen in de laatste 5 topkoersen' },
     { slug: 'remco-evenepoel', name: 'Remco Evenepoel', team: 'Soudal Quick-Step', profile: 'Constante vermogensrenner met solo-dreiging en een sterke tijdritmotor.', rating: '96', strength: 'Langeafstandaanvallen', modelFit: 'Sterk op heuvelachtige duurprofielen', trend: 'Stijgende vorm na hoogtestage' },
     { slug: 'wout-van-aert', name: 'Wout van Aert', team: 'Visma | Lease a Bike', profile: 'Veelzijdige kopman die kan winnen op kracht én koersinzicht.', rating: '97', strength: 'Veelzijdigheid', modelFit: 'Stabiel over meerdere scenario\'s', trend: 'Constante top-10 prestaties' },
@@ -91,8 +116,11 @@ const destinationCards = [
     },
 ];
 
-export default function Dashboard({ liveBoard = null }) {
+export default function Dashboard({ liveBoard = null, evaluationSummary = null, featuredRaces = null, featuredRiders = null }) {
     const board = liveBoard ?? fallbackLiveBoard;
+    const stats = buildStats(evaluationSummary);
+    const previewRaces = Array.isArray(featuredRaces) && featuredRaces.length > 0 ? featuredRaces : featuredRacesFallback;
+    const previewRiders = Array.isArray(featuredRiders) && featuredRiders.length > 0 ? featuredRiders : featuredRidersFallback;
 
     return (
         <AppLayout>
@@ -313,15 +341,39 @@ export default function Dashboard({ liveBoard = null }) {
                         description="De homepage geeft al een eerste laag van het platform mee, zonder dat het als losse teaser aanvoelt."
                     />
 
-                    <RaceList races={featuredRaces} />
+                    <RaceList races={previewRaces} />
 
                     <div className="grid gap-5 lg:grid-cols-3">
-                        {featuredRiders.map((rider) => (
+                        {previewRiders.map((rider) => (
                             <RiderCard key={rider.slug} rider={rider} />
                         ))}
                     </div>
 
                     <PredictionTable entries={board.entries} />
+                </section>
+
+                <section className="vp-panel bg-gradient-to-br from-white to-amber-50/40 p-6 sm:p-8">
+                    <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="max-w-2xl">
+                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Laatste koerscheck</div>
+                            <h2 className="mt-4 font-display text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+                                Hoe goed zat de top-10 van de laatste koers?
+                            </h2>
+                            <p className="mt-4 text-sm leading-7 text-slate-600">
+                                Na een afgewerkte eendagskoers vergelijkt Velopred de voorspelde top-10 met de echte uitslag. Zo zie je meteen waar het model goed zat en waar bijsturing nodig is.
+                            </p>
+                        </div>
+
+                        <div className="grid w-full gap-4 sm:grid-cols-2 lg:max-w-xl">
+                            {stats.slice(0, 3).map((item) => (
+                                <div key={item.label} className="rounded-[22px] border border-slate-200 bg-white/70 p-5">
+                                    <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{item.label}</div>
+                                    <div className="mt-3 font-display text-3xl font-semibold tracking-tight text-slate-950">{item.value}</div>
+                                    <p className="mt-3 text-sm leading-6 text-slate-600">{item.detail}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
                 </section>
 
                 <section className="vp-panel-dark overflow-hidden px-6 py-10 sm:px-8">
