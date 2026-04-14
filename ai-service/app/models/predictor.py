@@ -1326,6 +1326,15 @@ class VelopredPredictor:
                 subtype_bonus *= subtype_multiplier
 
                 if stage_subtype in {"sprint", "reduced_sprint"}:
+                    race_days = float(rider.get("race_days", 1) or 1)
+                    stage_no = float(rider.get("stage_number", 0) or 0)
+                    is_transition_stage = (
+                        stage_subtype == "reduced_sprint"
+                        and race_days >= 14
+                        and stage_no >= 3
+                        and stage_no <= (race_days - 3)
+                    )
+
                     stage_role_penalty += max(0.0, 0.62 - stage_profile_fit) * 14.0
                     stage_role_penalty += max(0.0, 0.30 - stage_profile_exp) * 4.5
                     stage_role_penalty += max(0.0, 0.72 - stage_speciality_fit) * 24.0
@@ -1352,6 +1361,26 @@ class VelopredPredictor:
                         # Vermijd dat pure GC-types structureel hoog blijven in reduced sprint.
                         stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.52 - speciality_hills_pct[idx]) * 22.0
                         stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.56 - sprint_profile_fit) * 14.0
+
+                        if is_transition_stage:
+                            # Overgangsetappes in grote rondes eindigen vaak niet op een klassieke
+                            # massasprint. We duwen de balans weg van pure sprinters en top-GC
+                            # richting "allrounders" en renners die vaak uit een vroege vlucht
+                            # kunnen winnen.
+                            sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                            gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                            hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
+
+                            stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.70) * 18.0
+                            stage_role_penalty += max(0.0, speciality_sprint_pct[idx] - 0.80) * 10.0
+                            if sprint_raw > 0.58 and hills_raw < 0.42:
+                                stage_role_penalty += 10.0 + (sprint_raw - 0.58) * 18.0
+                            if gc_raw > 0.52 and speciality_one_day_pct[idx] < 0.55:
+                                stage_role_penalty += 10.0 + (gc_raw - 0.52) * 18.0
+
+                            subtype_bonus += max(0.0, speciality_one_day_pct[idx] - 0.55) * 8.0
+                            subtype_bonus += max(0.0, punch_profile_fit - 0.55) * 6.0
+                            subtype_bonus += min(stage_subtype_results_count, 8.0) * 0.10
                     if current_year_avg_stage_subtype not in (None, ""):
                         stage_role_penalty += max(0.0, float(current_year_avg_stage_subtype) - 20.0) * 0.82
                     if avg_stage_subtype not in (None, ""):
