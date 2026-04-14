@@ -21,11 +21,11 @@ export default function Footer() {
                         <BrandLockup dark />
                         <div className="max-w-2xl">
                             <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-                                Velopred zet koersdata om in onderbouwde beslissingen.
+                                Velopred helpt je sneller zien wie waar hoort.
                             </h2>
                             <p className="mt-3 text-base leading-7 text-slate-300">
-                                Gebouwd voor demo's, onderzoekspresentaties en verdere uitbreiding naar een volwaardig
-                                voorspellingsplatform voor koersen, renners en scenarioanalyse.
+                                Gebouwd als bachelorproject, maar met een echte app-structuur: koersen, renners,
+                                voorspellingen en evaluatie.
                             </p>
                         </div>
                     </div>
@@ -44,15 +44,15 @@ export default function Footer() {
                             ))}
                         </div>
                         <p className="text-sm leading-6 text-slate-400">
-                            Velopred is opgezet als moderne Laravel + Inertia + React-app met ruimte voor echte
-                            data-inname, modeloutput en uitlegbare AI-inzichten.
+                            Velopred is een moderne Laravel + Inertia + React-app met ruimte voor echte data,
+                            modeloutput en iteratie.
                         </p>
                     </div>
                 </div>
 
                 <div className="mt-8 flex flex-col gap-3 border-t border-white/10 pt-6 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
                     <p>Velopred</p>
-                    <p>AI-ondersteunde koersanalyse voor de volgende beslissende move in het peloton.</p>
+                    <p>Koersanalyse en voorspellingen, zonder gedoe.</p>
                 </div>
             </div>
         </footer>

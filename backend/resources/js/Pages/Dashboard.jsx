@@ -40,26 +40,26 @@ function buildStats(evaluationSummary) {
 const features = [
     {
         title: 'Koersintelligentie',
-        description: 'Combineert parcours, hoogtemeters, koersverloop en ploegcontext tot scenario-signalen nog voor de finale openbreekt.',
+        description: 'Combineert parcours, vorm en ploegcontext tot een inschatting die past bij het type koers.',
         accent: 'from-amber-100 to-orange-50',
     },
     {
-        title: 'Uitlegbare AI-scoring',
-        description: 'Elke ranking laat zien waarom een renner stijgt of zakt en met welke signalen dat gebeurt.',
+        title: 'Uitlegbare modelscore',
+        description: 'Je ziet niet alleen wie bovenaan staat, maar ook welke signalen het meeste doorwegen.',
         accent: 'from-cyan-100 to-teal-50',
     },
     {
-        title: 'Presentatieklare dashboards',
-        description: 'Strakke schermen en metrics maken het platform geschikt voor demo, jury en technisch overleg.',
+        title: 'Demo- en presentatieproof',
+        description: 'Overzichtelijk, snel en leesbaar. Handig om te tonen, maar ook gewoon om te volgen.',
         accent: 'from-slate-100 to-white',
     },
 ];
 
 const workflow = [
-    { step: '01', title: 'Signalen verzamelen', text: 'Koersmetadata, vorm, terreinprofiel en scenariofactoren worden samengebracht in één gestructureerde inputlaag.' },
-    { step: '02', title: 'Model doorrekenen', text: 'De rankinglaag screent favorieten, toont onzekerheid en past projecties aan zodra de context verandert.' },
-    { step: '03', title: 'Uitlegbaar maken', text: 'Elke voorspelling krijgt context zodat je begrijpt waarom het model die kant op trekt.' },
-    { step: '04', title: 'Dieper graven', text: 'Vanuit de homepage spring je naadloos naar koersen, renners en detailvoorspellingen zonder de draad te verliezen.' },
+    { step: '01', title: 'Data ophalen', text: 'Kalender, startlijst, resultaten en rennerprofielen komen binnen via PCS en worden lokaal opgeslagen.' },
+    { step: '02', title: 'Model runnen', text: 'Per koers worden features opgebouwd en wordt de ranking opnieuw berekend zodra er updates zijn.' },
+    { step: '03', title: 'Uitleg erbij', text: 'Je krijgt context bij de ranking: terreinfit, vorm, koershistoriek en onzekerheid.' },
+    { step: '04', title: 'Doorklikken', text: 'Van hieruit ga je direct naar koersen, renners en detailpagina’s.' },
 ];
 
 const fallbackHeroPredictions = [
@@ -129,14 +129,14 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
             <div className="space-y-24">
                 <section className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
                     <div className="space-y-8">
-                        <span className="vp-pill">AI-ondersteunde wieleranalyse voor koersen, renners en klassementen</span>
+                        <span className="vp-pill">Koersdata, voorspellingen en context op 1 plek</span>
 
                         <div className="space-y-5">
                             <h1 className="font-display text-5xl font-semibold tracking-tight text-slate-950 sm:text-6xl lg:text-7xl">
                                 Zie de koers kantelen nog voor de finale openbreekt.
                             </h1>
                             <p className="max-w-2xl text-lg leading-8 text-slate-600 sm:text-xl">
-                                Velopred bundelt koersdata, rennerprofielen en uitlegbare AI tot een platform dat voorspelt én uitlegt waarom favorieten stijgen of dalen. Startlijsten, resultaten en modelrankings worden continu gesynchroniseerd, zodat je de koers al kunt doorgronden nog voor de finale openbreekt.
+                                Velopred bundelt koersdata en rennerprofielen tot een platform dat voorspelt én toont waarom favorieten stijgen of dalen. Startlijsten en resultaten worden automatisch bijgewerkt, zodat je snel ziet wat er verandert.
                             </p>
                         </div>
 
@@ -155,7 +155,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                                     Presentatiemodus
                                 </div>
                                 <p className="mt-3 text-base leading-7 text-slate-600">
-                                    Strakke hiërarchie, compacte uitleg en een serieuze visuele taal voor demo en presentatie.
+                                    Rustige lay-out, korte uitleg en duidelijke cijfers. Klaar om te tonen.
                                 </p>
                             </div>
                             <div className="vp-panel p-5">
@@ -163,7 +163,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                                     Technische geloofwaardigheid
                                 </div>
                                 <p className="mt-3 text-base leading-7 text-slate-600">
-                                    Laravel, Inertia, React en Tailwind in een echte applicatiestructuur, niet als losse mockup.
+                                    Laravel, Inertia, React en Tailwind in een echte applicatiestructuur.
                                 </p>
                             </div>
                         </div>
@@ -189,7 +189,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                                         </div>
                                     </div>
                                     <div className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold text-white">
-                                        Modelzekerheid {board.confidence}%
+                                        Betrouwbaarheid {board.confidence}%
                                     </div>
                                 </div>
 
@@ -208,7 +208,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                                             <div className="mt-2 text-sm leading-6 text-slate-300">{board.breakPointText}</div>
                                         </div>
                                         <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
-                                            <div className="text-xs uppercase tracking-[0.24em] text-slate-400">AI-notitie</div>
+                                            <div className="text-xs uppercase tracking-[0.24em] text-slate-400">Opmerking</div>
                                             <div className="mt-2 text-sm leading-6 text-slate-300">
                                                 {board.aiNote}
                                             </div>
@@ -257,8 +257,8 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                 <section id="features" className="space-y-10">
                     <SectionHeading
                         eyebrow="Platformsterktes"
-                        title="Een homepage die meteen als product aanvoelt."
-                        description="Velopred zit tussen koersanalyse en operationele AI. De opbouw hieronder legt de nadruk op duidelijkheid, vertrouwen en technische degelijkheid."
+                        title="Snel overzicht, zonder ruis."
+                        description="De homepage is geen teaser: je ziet meteen wat er speelt, en je klikt door waar je wil."
                     />
 
                     <div className="grid gap-5 lg:grid-cols-3">
@@ -281,8 +281,8 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                     <div className="space-y-6">
                         <SectionHeading
                             eyebrow="Werking"
-                            title="Opgebouwd rond een uitlegbare AI-flow."
-                            description="De structuur brengt je van ruwe koerscontext naar een voorspelling die je ook als mens nog kunt volgen."
+                            title="Van data naar voorspelling."
+                            description="Je gaat van koerscontext naar een ranking die je ook kunt uitleggen."
                         />
 
                         <div className="vp-panel-dark p-6">
@@ -291,7 +291,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                                 Vorm + parcours + tactiek + onzekerheid
                             </div>
                             <p className="mt-4 text-sm leading-7 text-slate-300">
-                                De interface toont niet alleen wie vooraan staat, maar ook welke vorm-, parcours- en koerssignalen daaronder zitten.
+                                Je ziet niet alleen wie vooraan staat, maar ook waarom.
                             </p>
                         </div>
                     </div>
@@ -314,8 +314,8 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                 <section className="space-y-10">
                     <SectionHeading
                         eyebrow="Kernmodules"
-                        title="Drie duidelijke ingangen in hetzelfde product."
-                        description="Elke bestemming volgt dezelfde taal en logica, zodat het platform van homepage tot detailpagina coherent blijft."
+                        title="Drie ingangen."
+                        description="Koersen, renners en voorspellingen. Zelfde stijl, zelfde logica."
                     />
 
                     <div className="grid gap-5 lg:grid-cols-3">
@@ -338,7 +338,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                     <SectionHeading
                         eyebrow="Voorproef"
                         title="Een voorproef van de koers- en rennerpagina's."
-                        description="De homepage geeft al een eerste laag van het platform mee, zonder dat het als losse teaser aanvoelt."
+                        description="Een paar schermen om snel te zien wat je waar vindt."
                     />
 
                     <RaceList races={previewRaces} />
@@ -360,7 +360,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                                 Hoe goed zat de top-10 van de laatste koers?
                             </h2>
                             <p className="mt-4 text-sm leading-7 text-slate-600">
-                                Na een afgewerkte eendagskoers vergelijkt Velopred de voorspelde top-10 met de echte uitslag. Zo zie je meteen waar het model goed zat en waar bijsturing nodig is.
+                                Na een eendagskoers vergelijken we de voorspelde top-10 met de echte uitslag. Zo zie je meteen waar het goed zat en waar er nog werk is.
                             </p>
                         </div>
 
@@ -381,10 +381,10 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                         <div>
                             <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Klaar om te tonen</div>
                             <h2 className="mt-4 font-display text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-                                Gemaakt om zowel een technische jury als een gewone koersvolger mee te krijgen.
+                                Gemaakt voor zowel een technische jury als een gewone koersvolger.
                             </h2>
                             <p className="mt-4 max-w-2xl text-base leading-7 text-slate-300">
-                                Velopred heeft een duidelijke visuele identiteit, een rustige informatiehiërarchie en demo-klare schermen voor koersen, renners en voorspellingen.
+                                Duidelijke schermen, rustige hiërarchie en snelle doorkliks naar detail.
                             </p>
                         </div>
 

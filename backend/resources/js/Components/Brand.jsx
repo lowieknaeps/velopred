@@ -67,7 +67,7 @@ export function BrandLockup({ dark = false, compact = false }) {
                         dark ? 'text-slate-400' : 'text-slate-500',
                     )}
                 >
-                    AI race intelligence
+                    koersvoorspellingen
                 </div>
             </div>
         </div>
