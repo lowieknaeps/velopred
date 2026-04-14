@@ -1291,6 +1291,11 @@ class VelopredPredictor:
 
             if prediction_type in {"gc", "youth", "points", "kom"}:
                 classification_race_history_factor = 0.18 + min(this_race_results_count, 4.0) * 0.16 + min(wins_this_race, 2.0) * 0.09
+
+                # Grand Tours: winners/podium regulars on this exact race should carry
+                # more weight for GC than the generic "classification" scaling.
+                if prediction_type == "gc" and race_days >= 18:
+                    classification_race_history_factor += min(wins_this_race, 2.0) * 0.10 + min(podiums_this_race, 4.0) * 0.03
                 course_bonus *= classification_race_history_factor
                 monument_bonus = 0.0
 

@@ -1526,11 +1526,11 @@ class PredictionService
             $top10Pct = (float) ($row['field_pct_top10_rate'] ?? 0.5);
             $recentParcoursAvg = $this->normalizedMetric($row['recent_avg_position_parcours'] ?? null, 25.0, true);
             $recentParcoursTop10 = min(1.0, max(0.0, (float) ($row['recent_top10_rate_parcours'] ?? 0) / 100.0));
-            $currentYearParcoursAvg = $this->normalizedMetric($row['current_year_avg_position_parcours'] ?? null, 25.0, true);
+            $currentYearParcoursAvg = $this->normalizedMetricOrNeutral($row['current_year_avg_position_parcours'] ?? null, 25.0, true);
             $currentYearParcoursTop10 = min(1.0, max(0.0, (float) ($row['current_year_top10_rate_parcours'] ?? 0) / 100.0));
             $stageSubtypeAvg = $this->normalizedMetric($row['avg_position_stage_subtype'] ?? null, 25.0, true);
             $recentStageSubtypeAvg = $this->normalizedMetric($row['recent_avg_position_stage_subtype'] ?? null, 25.0, true);
-            $currentYearStageSubtypeAvg = $this->normalizedMetric($row['current_year_avg_position_stage_subtype'] ?? null, 25.0, true);
+            $currentYearStageSubtypeAvg = $this->normalizedMetricOrNeutral($row['current_year_avg_position_stage_subtype'] ?? null, 25.0, true);
             $recentStageSubtypeTop10 = min(1.0, max(0.0, (float) ($row['recent_top10_rate_stage_subtype'] ?? 0) / 100.0));
             $currentYearStageSubtypeTop10 = min(1.0, max(0.0, (float) ($row['current_year_top10_rate_stage_subtype'] ?? 0) / 100.0));
             $stageSubtypeExperience = min(1.0, (float) ($row['stage_subtype_results_count'] ?? 0) / 10.0);
@@ -1547,7 +1547,7 @@ class PredictionService
             $podiumsThisRace = (float) ($row['podiums_this_race'] ?? 0);
             $winsCurrentYear = (float) ($row['wins_current_year'] ?? 0);
             $podiumsCurrentYear = (float) ($row['podiums_current_year'] ?? 0);
-            $currentYearAvg = $this->normalizedMetric($row['current_year_avg_position'] ?? null, 25.0, true);
+            $currentYearAvg = $this->normalizedMetricOrNeutral($row['current_year_avg_position'] ?? null, 25.0, true);
             $recentAvg = $this->normalizedMetric($row['recent_avg_position'] ?? null, 25.0, true);
             $parcoursAvg = $this->normalizedMetric($row['avg_position_parcours'] ?? null, 25.0, true);
             $raceSpecificity = min(1.0, max(0.0, ((float) ($row['race_specificity_ratio'] ?? 1.0) - 1.0) / 3.0));
@@ -1934,6 +1934,22 @@ class PredictionService
     {
         if (!is_numeric($value)) {
             $value = $fallback;
+        }
+
+        $normalized = min(1.0, max(0.0, (float) $value / max($fallback, 1.0)));
+
+        return $inverse ? 1.0 - $normalized : $normalized;
+    }
+
+    /**
+     * Like normalizedMetric(), but missing/invalid values return a neutral score (0.5)
+     * instead of behaving as "worst possible". This prevents top riders with missing
+     * season/parcours signals from getting artificially pushed down.
+     */
+    private function normalizedMetricOrNeutral(mixed $value, float $fallback, bool $inverse = false, float $neutral = 0.5): float
+    {
+        if (!is_numeric($value)) {
+            return $neutral;
         }
 
         $normalized = min(1.0, max(0.0, (float) $value / max($fallback, 1.0)));
