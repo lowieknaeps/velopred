@@ -125,79 +125,96 @@ class PredictionService
             );
             $savedRiderIds = [];
 
-            DB::transaction(function () use (
-                $predictions,
-                $slugToId,
-                $featuresBySlug,
-                $race,
-                $context,
-                $modelVersion,
-                &$saved,
-                &$savedRiderIds
-            ) {
-                foreach ($predictions as $pred) {
-                    $slug    = $pred['rider_slug'];
-                    $riderId = $slugToId[$slug] ?? null;
-                    if (!$riderId) {
-                        continue;
-                    }
+            $attempt = 0;
+            $maxAttempts = 6;
+            while (true) {
+                try {
+                    DB::transaction(function () use (
+                        $predictions,
+                        $slugToId,
+                        $featuresBySlug,
+                        $race,
+                        $context,
+                        $modelVersion,
+                        &$saved,
+                        &$savedRiderIds
+                    ) {
+                        foreach ($predictions as $pred) {
+                            $slug    = $pred['rider_slug'];
+                            $riderId = $slugToId[$slug] ?? null;
+                            if (!$riderId) {
+                                continue;
+                            }
 
-                    $savedRiderIds[] = (int) $riderId;
+                            $savedRiderIds[] = (int) $riderId;
 
-                    $rawWinProbability = (float) $pred['win_probability'];
-                    $rawTop10Probability = (float) $pred['top10_probability'];
-                    $calibrated = $context['prediction_type'] === 'result' && $race->isOneDay()
-                        ? $this->calibration->calibrateOneDayResultProbabilities(
-                            $race,
-                            (int) $pred['predicted_position'],
-                            $rawWinProbability,
-                            $rawTop10Probability,
-                        )
-                        : [
-                            'win_probability' => $rawWinProbability,
-                            'top10_probability' => $rawTop10Probability,
-                            'calibration' => null,
-                        ];
+                            $rawWinProbability = (float) $pred['win_probability'];
+                            $rawTop10Probability = (float) $pred['top10_probability'];
+                            $calibrated = $context['prediction_type'] === 'result' && $race->isOneDay()
+                                ? $this->calibration->calibrateOneDayResultProbabilities(
+                                    $race,
+                                    (int) $pred['predicted_position'],
+                                    $rawWinProbability,
+                                    $rawTop10Probability,
+                                )
+                                : [
+                                    'win_probability' => $rawWinProbability,
+                                    'top10_probability' => $rawTop10Probability,
+                                    'calibration' => null,
+                                ];
 
-                    $featureSet = $featuresBySlug[$slug] ?? $pred['features'];
-                    if (is_array($featureSet)) {
-                        $featureSet['raw_win_probability'] = $rawWinProbability;
-                        $featureSet['raw_top10_probability'] = $rawTop10Probability;
-                        if ($calibrated['calibration']) {
-                            $featureSet['probability_calibration'] = $calibrated['calibration'];
+                            $featureSet = $featuresBySlug[$slug] ?? $pred['features'];
+                            if (is_array($featureSet)) {
+                                $featureSet['raw_win_probability'] = $rawWinProbability;
+                                $featureSet['raw_top10_probability'] = $rawTop10Probability;
+                                if ($calibrated['calibration']) {
+                                    $featureSet['probability_calibration'] = $calibrated['calibration'];
+                                }
+                            }
+
+                            $predictionRecord = Prediction::updateOrCreate(
+                                [
+                                    'race_id' => $race->id,
+                                    'rider_id' => $riderId,
+                                    'prediction_type' => $context['prediction_type'],
+                                    'stage_number' => $context['stage_number'],
+                                ],
+                                [
+                                    'model_version' => $modelVersion,
+                                    'predicted_position' => $pred['predicted_position'],
+                                    'top10_probability' => $calibrated['top10_probability'],
+                                    'raw_top10_probability' => $rawTop10Probability,
+                                    'win_probability' => $calibrated['win_probability'],
+                                    'raw_win_probability' => $rawWinProbability,
+                                    'confidence_score' => $pred['confidence_score'],
+                                    'features' => $featureSet,
+                                ]
+                            );
+                            // Zorg dat reruns altijd zichtbaar zijn in "Voorspellingen vernieuwd",
+                            // zelfs wanneer de modeloutput inhoudelijk identiek blijft.
+                            $predictionRecord->touch();
+                            $saved++;
                         }
+
+                        Prediction::where('race_id', $race->id)
+                            ->where('prediction_type', $context['prediction_type'])
+                            ->where('stage_number', $context['stage_number'])
+                            ->when(!empty($savedRiderIds), fn ($query) => $query->whereNotIn('rider_id', array_values(array_unique($savedRiderIds))))
+                            ->delete();
+                    });
+                    break;
+                } catch (\Throwable $e) {
+                    $attempt++;
+                    $message = strtolower($e->getMessage());
+                    $locked = str_contains($message, 'database is locked') || str_contains($message, 'sqlite') && str_contains($message, 'locked');
+                    if (!$locked || $attempt >= $maxAttempts) {
+                        throw $e;
                     }
 
-                    $predictionRecord = Prediction::updateOrCreate(
-                        [
-                            'race_id' => $race->id,
-                            'rider_id' => $riderId,
-                            'prediction_type' => $context['prediction_type'],
-                            'stage_number' => $context['stage_number'],
-                        ],
-                        [
-                            'model_version' => $modelVersion,
-                            'predicted_position' => $pred['predicted_position'],
-                            'top10_probability' => $calibrated['top10_probability'],
-                            'raw_top10_probability' => $rawTop10Probability,
-                            'win_probability' => $calibrated['win_probability'],
-                            'raw_win_probability' => $rawWinProbability,
-                            'confidence_score' => $pred['confidence_score'],
-                            'features' => $featureSet,
-                        ]
-                    );
-                    // Zorg dat reruns altijd zichtbaar zijn in "Voorspellingen vernieuwd",
-                    // zelfs wanneer de modeloutput inhoudelijk identiek blijft.
-                    $predictionRecord->touch();
-                    $saved++;
+                    // Backoff (SQLite lock contention).
+                    usleep(250000 * $attempt);
                 }
-
-                Prediction::where('race_id', $race->id)
-                    ->where('prediction_type', $context['prediction_type'])
-                    ->where('stage_number', $context['stage_number'])
-                    ->when(!empty($savedRiderIds), fn ($query) => $query->whereNotIn('rider_id', array_values(array_unique($savedRiderIds))))
-                    ->delete();
-            });
+            }
 
             Log::info("[Prediction] {$race->name} {$race->year} {$context['prediction_type']} {$context['stage_number']}: " . count($predictions));
         }
