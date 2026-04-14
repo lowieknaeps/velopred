@@ -1968,6 +1968,36 @@ class VelopredPredictor:
         uniform_weight = float(np.clip(uniform_weight, 0.035, 0.18))
         win_probs = (1.0 - uniform_weight) * win_probs + uniform_weight * (1.0 / n)
 
+        # Overgangsetappes in grote rondes: dark horses (vlucht) expliciet een kans geven.
+        if prediction_type == "stage" and stage_subtype == "reduced_sprint":
+            race_days = float((riders[0].get("race_days", 1) if riders else 1) or 1)
+            stage_no = float((riders[0].get("stage_number", stage_number) if riders else stage_number) or stage_number)
+            transition_breakaway_stage = (
+                race_days >= 18
+                and stage_no >= 3
+                and stage_no <= (race_days - 3)
+                and n >= 12
+            )
+            if transition_breakaway_stage:
+                attack_momentum_pct = self._percentile_scores(
+                    [r.get("current_year_attack_momentum_rate") for r in riders],
+                    inverse=False,
+                )
+                breakaway_score = (
+                    attack_momentum_pct * 0.55
+                    + speciality_one_day_pct * 0.30
+                    + speciality_hills_pct * 0.15
+                    - speciality_sprint_pct * 0.20
+                    - speciality_gc_pct * 0.20
+                )
+                breakaway_score = np.clip(breakaway_score, -0.75, 0.95)
+                breakaway_exp = np.exp(breakaway_score - float(np.max(breakaway_score)))
+                breakaway_prior = breakaway_exp / max(1e-9, float(breakaway_exp.sum()))
+
+                blend = 0.28
+                win_probs = (1.0 - blend) * win_probs + blend * breakaway_prior
+                win_probs = win_probs / max(1e-9, float(win_probs.sum()))
+
         max_cap = {
             "stage": {
                 "sprint": 0.34,
