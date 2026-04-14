@@ -66,7 +66,12 @@ export default function PredictionsIndex({
                 {race && (
                     <div className="flex flex-wrap items-center justify-between gap-4">
                         <div className="flex flex-wrap items-center gap-3">
-                            <h2 className="font-display text-2xl font-semibold text-slate-950">{race.name}</h2>
+                            <Link
+                                href={`/races/${race.slug}`}
+                                className="font-display text-2xl font-semibold text-slate-950 hover:text-indigo-700"
+                            >
+                                {race.name}
+                            </Link>
                             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
                                 {race.date}
                             </span>
@@ -121,13 +126,6 @@ export default function PredictionsIndex({
                                     </div>
                                 </div>
                             )}
-
-                            <Link
-                                href={`/races/${race.slug}`}
-                                className="text-sm font-medium text-indigo-600 hover:text-indigo-700"
-                            >
-                                Naar koersdetail →
-                            </Link>
                         </div>
                     </div>
                 )}
