@@ -1932,6 +1932,52 @@ class VelopredPredictor:
                 order = np.array([int(i) for i in order if not hard_sprinter_demote[i]] + flagged, dtype=int)
         n        = len(scores)
 
+        # Special case: ploegentijdrit is in realiteit een team-resultaat.
+        # We bouwen daarom een team-ranking en groeperen renners per team, zodat
+        # "winnende ploeg = eerste blok renners" klopt in de output.
+        ttt_team_order: np.ndarray | None = None
+        ttt_team_probs: dict[str, float] | None = None
+        if prediction_type == "stage" and stage_subtype == "ttt" and "team" in df.columns:
+            team_names = df["team"].fillna("").astype(str).to_list()
+            team_to_indices: dict[str, list[int]] = {}
+            for idx, tname in enumerate(team_names):
+                if not tname:
+                    continue
+                team_to_indices.setdefault(tname, []).append(idx)
+
+            if len(team_to_indices) >= 2:
+                team_items: list[tuple[str, float]] = []
+                for tname, idxs in team_to_indices.items():
+                    # PCS/WT TTT tijd telt meestal op de 4e/5e renner.
+                    # Als we dat niet weten, nemen we gemiddeld van beste 4 (laagste score).
+                    sorted_scores = np.sort(adjusted_scores[np.array(idxs, dtype=int)])
+                    k = int(min(4, len(sorted_scores)))
+                    team_score = float(np.mean(sorted_scores[:k])) if k > 0 else float(np.mean(sorted_scores))
+                    team_items.append((tname, team_score))
+
+                # Team win probs op basis van team scores (lager = beter).
+                team_items_sorted = sorted(team_items, key=lambda x: x[1])
+                team_scores_arr = np.array([x[1] for x in team_items_sorted], dtype=float)
+                team_names_sorted = [x[0] for x in team_items_sorted]
+                team_std = max(float(np.std(team_scores_arr)), 1.0)
+                team_norm = (team_scores_arr - float(np.min(team_scores_arr))) / team_std
+                team_logits = -team_norm * (sharpness * 0.92)
+                team_exp = np.exp(team_logits - float(np.max(team_logits)))
+                team_probs_arr = team_exp / max(1e-9, float(team_exp.sum()))
+                ttt_team_probs = {name: float(prob) for name, prob in zip(team_names_sorted, team_probs_arr)}
+
+                # Build order: teams by strength, riders within team by adjusted_scores.
+                ordered_indices: list[int] = []
+                for tname in team_names_sorted:
+                    idxs = team_to_indices.get(tname, [])
+                    idxs_sorted = sorted(idxs, key=lambda i: float(adjusted_scores[i]))
+                    ordered_indices.extend([int(i) for i in idxs_sorted])
+                # Add any riders without a team label at the end.
+                missing = [int(i) for i in range(len(riders)) if team_names[i] == ""]
+                ordered_indices.extend(missing)
+                ttt_team_order = np.array(ordered_indices, dtype=int)
+                order = ttt_team_order
+
         score_std = max(float(np.std(adjusted_scores)), 1.0)
         normalized_scores = (adjusted_scores - np.min(adjusted_scores)) / score_std
         favourite_scores = self._safe_series(df, "favourite_score", DEFAULT_FEATURE_VALUES["favourite_score"]).to_numpy(dtype=float)
@@ -2003,6 +2049,25 @@ class VelopredPredictor:
                 blend = 0.28
                 win_probs = (1.0 - blend) * win_probs + blend * breakaway_prior
                 win_probs = win_probs / max(1e-9, float(win_probs.sum()))
+
+        # For ploegentijdritten: override rider win_probs with team win probs,
+        # distributed across team members so total probability remains 1.0.
+        if prediction_type == "stage" and stage_subtype == "ttt" and ttt_team_probs:
+            team_names = df["team"].fillna("").astype(str).to_list()
+            team_sizes: dict[str, int] = {}
+            for name in team_names:
+                if not name:
+                    continue
+                team_sizes[name] = team_sizes.get(name, 0) + 1
+
+            new_probs = np.full_like(win_probs, 1.0 / n, dtype=float)
+            for idx, tname in enumerate(team_names):
+                if not tname or tname not in ttt_team_probs:
+                    continue
+                size = max(1, int(team_sizes.get(tname, 1)))
+                new_probs[idx] = float(ttt_team_probs[tname]) / float(size)
+            new_probs = new_probs / max(1e-9, float(new_probs.sum()))
+            win_probs = new_probs
 
         max_cap = {
             "stage": {
