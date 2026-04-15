@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v20"
+MODEL_VERSION = "v22"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1390,7 +1390,9 @@ class VelopredPredictor:
                                 stage_role_penalty += 10.0 + (gc_raw - 0.52) * 18.0
 
                             subtype_bonus += max(0.0, speciality_one_day_pct[idx] - 0.55) * 8.0
-                            subtype_bonus += max(0.0, punch_profile_fit - 0.55) * 6.0
+                            # For transition stages (reduced sprint), stage_profile_fit already represents
+                            # the sprint/punch suitability mix for this subtype.
+                            subtype_bonus += max(0.0, stage_profile_fit - 0.55) * 6.0
                             subtype_bonus += min(stage_subtype_results_count, 8.0) * 0.10
                     if current_year_avg_stage_subtype not in (None, ""):
                         stage_role_penalty += max(0.0, float(current_year_avg_stage_subtype) - 20.0) * 0.82
