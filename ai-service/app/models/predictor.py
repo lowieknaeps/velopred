@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v22"
+MODEL_VERSION = "v23"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1920,6 +1920,22 @@ class VelopredPredictor:
                     + experience_pct[idx] * 0.8
                 )
                 adjusted_scores[idx] -= field_bonus
+
+        # Grand Tours GC: previous winners/podium regulars should not end up "randomly"
+        # behind breakout names purely due to missing season signals or small-sample noise.
+        # This acts as a light prior, not a hard rule.
+        if prediction_type == "gc" and float((riders[0].get("race_days", 1) if riders else 1) or 1) >= 18:
+            career_points_pct = self._percentile_scores([r.get("career_points") for r in riders], inverse=False)
+            for idx, rider in enumerate(riders):
+                wins_this_race = float(rider.get("wins_this_race", 0) or 0)
+                podiums_this_race = float(rider.get("podiums_this_race", 0) or 0)
+                gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+
+                # Require: proven Tour-level GC rider + meaningful race history.
+                if wins_this_race >= 2 and gc_raw >= 0.50 and career_points_pct[idx] >= 0.70:
+                    adjusted_scores[idx] -= 7.5 + min(2.0, wins_this_race - 2.0) * 2.0 + min(5.0, podiums_this_race) * 0.35
+                elif wins_this_race >= 1 and podiums_this_race >= 3 and gc_raw >= 0.55 and career_points_pct[idx] >= 0.75:
+                    adjusted_scores[idx] -= 4.0 + min(6.0, podiums_this_race) * 0.25
 
         order    = np.argsort(adjusted_scores)
         if (
