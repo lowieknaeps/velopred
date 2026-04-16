@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v24"
+MODEL_VERSION = "v25"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1904,13 +1904,15 @@ class VelopredPredictor:
             experience_pct = self._percentile_scores([r.get("n_results") for r in riders], inverse=False)
             current_year_results_pct = self._percentile_scores([r.get("current_year_results_count") for r in riders], inverse=False)
             parcours_experience_pct = self._percentile_scores([r.get("parcours_results_count") for r in riders], inverse=False)
+            is_grand_tour_gc = prediction_type == "gc" and float((riders[0].get("race_days", 1) if riders else 1) or 1) >= 18
 
             for idx, rider in enumerate(riders):
                 this_race_history = float(rider.get("this_race_results_count", 0) or 0)
                 history_gap_factor = 0.55 + 0.45 * float(np.clip(1.0 - this_race_history / 3.0, 0.0, 1.0))
+                pcs_rank_term = 0.0 if is_grand_tour_gc else pcs_ranking_pct[idx] * 2.5
                 field_bonus = small_field_factor * history_gap_factor * (
                     career_points_pct[idx] * 4.0
-                    + pcs_ranking_pct[idx] * 2.5
+                    + pcs_rank_term
                     + uci_ranking_pct[idx] * 1.5
                     + current_year_avg_pct[idx] * 3.5
                     + recent_avg_pct[idx] * 2.0
