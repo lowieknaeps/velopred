@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v25"
+MODEL_VERSION = "v26"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1923,21 +1923,33 @@ class VelopredPredictor:
                 )
                 adjusted_scores[idx] -= field_bonus
 
-        # Grand Tours GC: previous winners/podium regulars should not end up "randomly"
-        # behind breakout names purely due to missing season signals or small-sample noise.
-        # This acts as a light prior, not a hard rule.
+        # Grand Tours GC: make the GC hierarchy more "obviously correct".
+        # For 3-week races we apply a stronger prior based on:
+        # - Tour history (wins/podiums on this exact race)
+        # - elite GC+climbing profile (PCS specialities)
+        # This pushes proven winners (e.g. multiple TdF wins) to the top unless
+        # there is a clear contrary signal.
         if prediction_type == "gc" and float((riders[0].get("race_days", 1) if riders else 1) or 1) >= 18:
             career_points_pct = self._percentile_scores([r.get("career_points") for r in riders], inverse=False)
             for idx, rider in enumerate(riders):
                 wins_this_race = float(rider.get("wins_this_race", 0) or 0)
                 podiums_this_race = float(rider.get("podiums_this_race", 0) or 0)
                 gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
 
-                # Require: proven Tour-level GC rider + meaningful race history.
-                if wins_this_race >= 2 and gc_raw >= 0.50 and career_points_pct[idx] >= 0.70:
-                    adjusted_scores[idx] -= 7.5 + min(2.0, wins_this_race - 2.0) * 2.0 + min(5.0, podiums_this_race) * 0.35
-                elif wins_this_race >= 1 and podiums_this_race >= 3 and gc_raw >= 0.55 and career_points_pct[idx] >= 0.75:
-                    adjusted_scores[idx] -= 4.0 + min(6.0, podiums_this_race) * 0.25
+                # Composite "world GC" strength: TdF is decided in the mountains, so
+                # climbing should strongly support GC speciality.
+                world_gc = gc_raw * 0.65 + climb_raw * 0.35
+
+                # Base push for elite GC profiles.
+                if world_gc >= 0.62 and career_points_pct[idx] >= 0.70:
+                    adjusted_scores[idx] -= (world_gc - 0.62) * 22.0
+
+                # Race-history prior: multiple wins should be extremely hard to beat.
+                if wins_this_race >= 2 and world_gc >= 0.60 and career_points_pct[idx] >= 0.75:
+                    adjusted_scores[idx] -= 10.0 + min(2.0, wins_this_race - 2.0) * 5.0 + min(6.0, podiums_this_race) * 0.75
+                elif wins_this_race >= 1 and podiums_this_race >= 3 and world_gc >= 0.58 and career_points_pct[idx] >= 0.75:
+                    adjusted_scores[idx] -= 6.0 + min(6.0, podiums_this_race) * 0.55
 
         order    = np.argsort(adjusted_scores)
         if (
