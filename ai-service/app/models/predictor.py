@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v26"
+MODEL_VERSION = "v27"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1950,6 +1950,12 @@ class VelopredPredictor:
                     adjusted_scores[idx] -= 10.0 + min(2.0, wins_this_race - 2.0) * 5.0 + min(6.0, podiums_this_race) * 0.75
                 elif wins_this_race >= 1 and podiums_this_race >= 3 and world_gc >= 0.58 and career_points_pct[idx] >= 0.75:
                     adjusted_scores[idx] -= 6.0 + min(6.0, podiums_this_race) * 0.55
+
+                # Tie-breaker: if someone has strictly more wins on this exact Grand Tour
+                # AND an elite world_gc profile, they should float above the others.
+                # (This is the "Pogacar > Vingegaard by default" rule without hardcoding names.)
+                if wins_this_race >= 3 and world_gc >= 0.62 and career_points_pct[idx] >= 0.78:
+                    adjusted_scores[idx] -= 6.0 + (wins_this_race - 2.0) * 2.0
 
         order    = np.argsort(adjusted_scores)
         if (
