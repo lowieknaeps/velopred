@@ -583,8 +583,10 @@ class PredictionService
         }
 
         if ($contextPrior->isEmpty()) {
+            $teamName = $rider->team?->name;
             return [
                 'rider_slug'              => $rider->pcs_slug,
+                'team'                   => $teamName,
                 'prediction_type'         => $predictionType,
                 'stage_number'            => $stageNumber,
                 'field_size'              => $fieldSize,
@@ -775,6 +777,8 @@ class PredictionService
             $recentOneDayMomentum = round($positionScore * $daysDecay, 4);
         }
 
+        $teamName = $rider->team?->name;
+
         // Race-specifieke features: normale decay (zonder current_year_boost)
         // zodat historische prestaties op déze koers nog meetellen (RVV-effect)
         $raceWeights = $contextPrior->mapWithKeys(function ($r, $i) use ($currentYear) {
@@ -927,6 +931,7 @@ class PredictionService
 
         return [
             'rider_slug'              => $rider->pcs_slug,
+            'team'                   => $teamName,
             'prediction_type'         => $predictionType,
             'stage_number'            => $stageNumber,
             'field_size'              => $fieldSize,

@@ -1999,7 +1999,17 @@ class VelopredPredictor:
                 team_names_sorted = [x[0] for x in team_items_sorted]
                 team_std = max(float(np.std(team_scores_arr)), 1.0)
                 team_norm = (team_scores_arr - float(np.min(team_scores_arr))) / team_std
-                team_logits = -team_norm * (sharpness * 0.92)
+                # 'sharpness' wordt verderop pas berekend. Voor TTT volstaat een
+                # eenvoudige group-based variant om teams van elkaar te scheiden.
+                pre_sharpness = {
+                    "cobbled": 1.55,
+                    "classic": 1.45,
+                    "mountain": 1.28,
+                    "hilly": 1.24,
+                    "flat": 1.18,
+                    "default": 1.20,
+                }.get(group, 1.20)
+                team_logits = -team_norm * (pre_sharpness * 0.92)
                 team_exp = np.exp(team_logits - float(np.max(team_logits)))
                 team_probs_arr = team_exp / max(1e-9, float(team_exp.sum()))
                 ttt_team_probs = {name: float(prob) for name, prob in zip(team_names_sorted, team_probs_arr)}

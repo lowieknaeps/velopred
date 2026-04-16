@@ -4,6 +4,7 @@ from typing import Optional
 
 class RiderFeatures(BaseModel):
     rider_slug: str
+    team: Optional[str] = None
     prediction_type: Optional[str] = None
     stage_number: Optional[int] = 0
     field_size: Optional[float] = None
