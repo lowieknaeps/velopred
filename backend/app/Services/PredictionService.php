@@ -1974,6 +1974,26 @@ class PredictionService
         return $inverse ? 1.0 - $normalized : $normalized;
     }
 
+    private function intraTeamGcLeaderScore(array $features): float
+    {
+        $careerPct = min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5)));
+        $seasonDom = min(1.0, max(0.0, (float) ($features['season_dominance_score'] ?? 50.0) / 100.0));
+        $gcSpec = min(1.0, max(0.0, (float) ($features['pcs_speciality_gc'] ?? 0.0) / 10000.0));
+        $climbSpec = min(1.0, max(0.0, (float) ($features['pcs_speciality_climber'] ?? 0.0) / 10000.0));
+        $winsThisRace = max(0.0, (float) ($features['wins_this_race'] ?? 0.0));
+        $podiumsThisRace = max(0.0, (float) ($features['podiums_this_race'] ?? 0.0));
+
+        $history = min(1.0, ($winsThisRace / 2.0) * 0.75 + ($podiumsThisRace / 6.0) * 0.25);
+
+        return (
+            $careerPct * 0.48
+            + $gcSpec * 0.32
+            + $climbSpec * 0.10
+            + $seasonDom * 0.06
+            + $history * 0.04
+        );
+    }
+
     private function stabilizeCourseHistoryAverage(?float $rawAverage, float $fallback, int $sampleCount, string $predictionType): float
     {
         if ($rawAverage === null) {
@@ -2301,6 +2321,7 @@ class PredictionService
             ->pluck('startlist_order', 'rider_id');
 
         $teamBuckets = [];
+        $useStartlistOrder = $predictionType === 'result';
         foreach ($predictions as $index => $prediction) {
             $slug = (string) ($prediction['rider_slug'] ?? '');
             if ($slug === '' || !isset($ridersBySlug[$slug])) {
@@ -2315,11 +2336,14 @@ class PredictionService
             $features = $featuresBySlug[$slug] ?? [];
             $riderId = (int) ($slugToId[$slug] ?? 0);
             $startlistOrder = $riderId > 0 ? $startlistOrdersByRiderId->get($riderId) : null;
+            $leaderScore = $predictionType === 'gc'
+                ? $this->intraTeamGcLeaderScore($features)
+                : $this->intraTeamLeaderScore($features);
             $teamBuckets[$teamId][] = [
                 'index' => $index,
                 'slug' => $slug,
-                'startlist_order' => is_numeric($startlistOrder) ? (int) $startlistOrder : null,
-                'leader_score' => $this->intraTeamLeaderScore($features),
+                'startlist_order' => $useStartlistOrder && is_numeric($startlistOrder) ? (int) $startlistOrder : null,
+                'leader_score' => $leaderScore,
                 'career_pct' => min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5))),
                 'pcs_pct' => min(1.0, max(0.0, (float) ($features['field_pct_pcs_ranking'] ?? 0.5))),
                 'uci_pct' => min(1.0, max(0.0, (float) ($features['field_pct_uci_ranking'] ?? 0.5))),
@@ -2388,7 +2412,13 @@ class PredictionService
                 $leaderClearlyAboveTeammate = $eliteGap >= 0.04
                     || (((float) ($leader['leader_score'] ?? 0.0)) - ((float) ($member['leader_score'] ?? 0.0))) >= 0.08;
 
-                if (!$orderEligible && $gap < 0.10) {
+                // For GC we don't trust startlist order; rely purely on leader_score gap.
+                if ($predictionType === 'gc') {
+                    $orderEligible = false;
+                    if ($gap < 0.08) {
+                        continue;
+                    }
+                } elseif (!$orderEligible && $gap < 0.10) {
                     continue;
                 }
 
