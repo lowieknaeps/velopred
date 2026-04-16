@@ -234,7 +234,7 @@ class RaceController extends Controller
         $lockFile = "/tmp/velopred-rerun-{$race->id}-{$token}.lock";
         $doneFile = "/tmp/velopred-rerun-{$race->id}-{$token}.done";
         $logFile = "/tmp/velopred-rerun-{$race->id}-{$token}.log";
-        $aiServiceUrl = (string) config('services.ai_service.url', 'http://127.0.0.1:8000');
+        $aiServiceUrl = (string) config('services.ai_service.url', 'http://127.0.0.1:8001');
 
         Cache::put($this->rerunStatusCacheKey($race), [
             'status' => 'running',
@@ -250,12 +250,24 @@ class RaceController extends Controller
 
         // Draai de predict-command echt detached met lock/done marker.
         // Zo kunnen we status betrouwbaar volgen, ook na pagina-refresh.
+        $syncCmd = $race->isStageRace()
+            ? sprintf(
+                'AI_SERVICE_URL=%s %s artisan sync:race %s %s >> %s 2>&1;',
+                escapeshellarg($aiServiceUrl),
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg($race->pcs_slug),
+                escapeshellarg((string) $race->year),
+                escapeshellarg($logFile),
+            )
+            : '';
+
         $cmd = sprintf(
             "/bin/sh -lc %s",
             escapeshellarg(sprintf(
-                'touch %s; cd %s && AI_SERVICE_URL=%s %s artisan predict:race %s %s > %s 2>&1; rc=$?; echo $rc > %s; rm -f %s',
+                'touch %s; cd %s && %s AI_SERVICE_URL=%s %s artisan predict:race %s %s >> %s 2>&1; rc=$?; echo $rc > %s; rm -f %s',
                 escapeshellarg($lockFile),
                 escapeshellarg(base_path()),
+                $syncCmd,
                 escapeshellarg($aiServiceUrl),
                 escapeshellarg(PHP_BINARY),
                 escapeshellarg($race->pcs_slug),
