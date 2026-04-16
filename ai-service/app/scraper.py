@@ -4,6 +4,7 @@ Regelt rate limiting zodat we niet geblokkeerd worden.
 """
 
 import time
+import re
 import cloudscraper
 
 _scraper = cloudscraper.create_scraper()
@@ -89,7 +90,24 @@ def parcours_from_profile(icon: str | None) -> str:
 def stage_subtype_from_profile(icon: str | None, stage_name: str | None = None) -> str:
     name = (stage_name or "").lower()
 
-    if "ttt" in name or "team time trial" in name:
+    # Normalize to catch variants like "T.T.T.", "team time-trial", etc.
+    norm = re.sub(r"[^a-z0-9]+", " ", name).strip()
+
+    # Team time trial / ploegentijdrit
+    if (
+        "ttt" in norm
+        or "t t t" in norm
+        or "team time trial" in name
+        or "team time-trial" in name
+        or ("team" in norm and "time" in norm and "trial" in norm)
+        or "ploegentijdrit" in norm
+        or "ploegentijdrit" in name
+        or "teamtijdrit" in norm
+        or ("contre" in norm and "montre" in norm and "equipes" in norm)
+        or ("time" in norm and "trial" in norm and "team" in norm)
+        # PCS sometimes only shows "team" in the title while using the TT icon.
+        or ((icon or "") == "p6" and "team" in norm)
+    ):
         return "ttt"
     if "itt" in name or "prologue" in name or "time trial" in name:
         return "tt"

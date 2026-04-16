@@ -1,1 +1,10 @@
-# docs/ intentionally tracked (bachelor documentation)
+.DS_Store
+**/.DS_Store
+
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Laravel runtime
+backend/storage/framework/views/
+backend/storage/logs/
