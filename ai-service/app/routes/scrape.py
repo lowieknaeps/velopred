@@ -239,8 +239,10 @@ def scrape_top_competitors(slug: str, year: int):
                 "nationality": nationality,
                 "team_slug": slug_from_url(team_link.attributes.get("href", "")) if team_link else None,
                 "team_name": team_link.text(strip=True) if team_link else None,
-                "pcs_points": _parse_int(cells[-2].text(strip=True)),
-                "pcs_ranking": _parse_int(cells[-1].text(strip=True)),
+                # PCS top competitors table typically shows: ... | PCS ranking | PCS points
+                # We store both, but keep them in the correct fields.
+                "pcs_ranking": _parse_int(cells[-2].text(strip=True)),
+                "pcs_points": _parse_int(cells[-1].text(strip=True)),
                 "rank": _parse_int(cells[0].text(strip=True)),
             })
 
