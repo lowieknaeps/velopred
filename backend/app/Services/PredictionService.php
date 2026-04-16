@@ -2286,7 +2286,7 @@ class PredictionService
         array $featuresBySlug,
         string $predictionType
     ): array {
-        if ($predictionType !== 'result' || count($predictions) < 2 || $slugToId->isEmpty()) {
+        if (!in_array($predictionType, ['result', 'gc'], true) || count($predictions) < 2 || $slugToId->isEmpty()) {
             return $predictions;
         }
 
