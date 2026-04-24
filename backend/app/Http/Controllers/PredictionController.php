@@ -125,13 +125,32 @@ class PredictionController extends Controller
         $scenarios = $this->buildScenarios($race, $primaryPredictions);
 
         // ── Andere races met voorspellingen (sidebar) ─────────────────────────
-        $otherRaces = Race::relevant()
+        // Toon standaard de laatst afgelopen koersen (niet hardcoded).
+        $otherRacesBase = Race::relevant()
             ->where('year', $currentYear)
             ->where('id', '!=', $race->id)
-            ->whereHas('predictions')
-            ->orderBy('start_date', 'asc')
+            ->whereHas('predictions');
+
+        $otherRaces = (clone $otherRacesBase)
+            ->where('start_date', '<', $today)
+            ->orderBy('start_date', 'desc')
             ->limit(6)
-            ->get()
+            ->get();
+
+        // Fallback: vul aan met komende koersen als er weinig afgelopen koersen zijn.
+        if ($otherRaces->count() < 6) {
+            $needed = 6 - $otherRaces->count();
+            $upcoming = (clone $otherRacesBase)
+                ->where('start_date', '>=', $today)
+                ->orderBy('start_date', 'asc')
+                ->limit($needed)
+                ->get();
+            $otherRaces = $otherRaces->concat($upcoming);
+        }
+
+        $otherRaces = $otherRaces
+            ->unique('id')
+            ->values()
             ->map(fn(Race $r) => [
                 'slug'     => $r->pcs_slug,
                 'name'     => $r->name,
