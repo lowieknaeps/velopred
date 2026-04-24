@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v27"
+MODEL_VERSION = "v32"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1687,6 +1687,10 @@ class VelopredPredictor:
                     sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
                     hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
                     climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+                    one_day_raw = float(rider.get("pcs_speciality_one_day", 0) or 0) / 10000.0
+                    gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    cat_weight_raw = rider.get("category_weight")
+                    category_weight_value = float(cat_weight_raw) if cat_weight_raw not in (None, "") else 1.0
                     hilly_profile = float(np.clip(
                         speciality_hills_pct[idx] * 0.60
                         + speciality_climb_pct[idx] * 0.25
@@ -1743,6 +1747,61 @@ class VelopredPredictor:
                         ):
                             sprinter_mismatch_penalty += 18.0 if group == "hilly" else 14.0
                             hard_sprinter_demote[idx] = True
+
+                        # Ardennen-/heuvelklassiekers guard:
+                        # renners met te weinig punch/klim basis (lage hills+climb)
+                        # mogen niet in de topfavorieten terechtkomen.
+                        low_climb_engine = climb_raw < 0.30
+                        low_hills_engine = hills_raw < 0.48
+                        low_one_day_engine = one_day_raw < 0.52
+                        # Als iemand zowel hills als climb laag scoort, is dat
+                        # vrijwel nooit een LBL-top5 profiel.
+                        if low_climb_engine and low_hills_engine and low_one_day_engine:
+                            sprinter_mismatch_penalty += 14.0 + max(0.0, 0.46 - hills_raw) * 14.0 + max(0.0, 0.28 - climb_raw) * 22.0
+                        elif low_climb_engine and hills_raw < 0.52 and sprint_raw > 0.22:
+                            sprinter_mismatch_penalty += 10.0 + max(0.0, 0.28 - climb_raw) * 26.0
+                        if low_climb_engine and low_hills_engine and gc_raw < 0.48 and sprint_raw > 0.18:
+                            hard_sprinter_demote[idx] = True
+
+                        # Zware Ardennen-klassiekers (LBL/Amstel/Fleche-achtig):
+                        # renners met te weinig klim- en punch-profiel mogen niet
+                        # in de topfavorieten belanden, zelfs al hebben ze een
+                        # "hills" label. Dit is een algemene guard op basis van
+                        # PCS specialities + koerscategorie.
+                        # category_weight is a compact scalar; treat >= ~0.85 as heavy WT classic/monument-like.
+                        # LBL can be labelled "classic" in our dataset, so we apply the same guard to both.
+                        heavy_hilly = group in {"hilly", "classic"} and category_weight_value >= 0.85
+                        if heavy_hilly:
+                            # Absolute floor: if both hills+climb specialities are very low,
+                            # the rider should not appear as a serious favourite in LBL-like races.
+                            if climb_raw < 0.22 and hills_raw < 0.40:
+                                sprinter_mismatch_penalty += 22.0
+                                hard_sprinter_demote[idx] = True
+
+                            # Klassiekers waar het vaak op lange hellingen en herhaalde
+                            # inspanningen aankomt: lage climber-score is een sterke
+                            # negatieve indicator.
+                            # Soft clamp: sprint-leaning riders without enough climbing should slide down.
+                            if climb_raw < 0.48 and sprint_raw > 0.40:
+                                sprinter_mismatch_penalty += 7.0 + max(0.0, 0.48 - climb_raw) * 24.0
+                            if climb_raw < 0.42 and hills_raw < 0.60 and sprint_raw > 0.30:
+                                sprinter_mismatch_penalty += 6.0 + max(0.0, 0.42 - climb_raw) * 26.0
+                            if climb_raw < 0.35 and sprint_raw > 0.25:
+                                sprinter_mismatch_penalty += 9.0
+
+                            # Hard demote: pure sprinters / classic sprinters should not appear in top favourites.
+                            if (
+                                (sprint_raw - max(hills_raw, climb_raw)) > 0.18
+                                and climb_raw < 0.45
+                                and current_year_top10_parcours < 62.0
+                            ):
+                                sprinter_mismatch_penalty += 16.0
+                                hard_sprinter_demote[idx] = True
+
+                            # Extra guard: low hills + low climb + sprint-leaning should be pushed way down.
+                            if low_climb_engine and low_hills_engine and (sprint_raw - max(hills_raw, climb_raw)) > 0.10:
+                                sprinter_mismatch_penalty += 18.0
+                                hard_sprinter_demote[idx] = True
 
                 if abs(race_dynamics_form_adjustment) > 0:
                     # Koersverloop-signaal (bv. pech ondanks sterke koers)
