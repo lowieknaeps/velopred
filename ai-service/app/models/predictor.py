@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v36"
+MODEL_VERSION = "v39"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -2055,6 +2055,27 @@ class VelopredPredictor:
                 # (This is the "Pogacar > Vingegaard by default" rule without hardcoding names.)
                 if wins_this_race >= 3 and world_gc >= 0.62 and career_points_pct[idx] >= 0.78:
                     adjusted_scores[idx] -= 6.0 + (wins_this_race - 2.0) * 2.0
+
+        # One-week mountain stage races GC: still apply a lighter "elite GC" prior.
+        # These races are often decided in the mountains with short TTs, so world_gc
+        # should dominate over noisy early-season form metrics.
+        race_days_value = float((riders[0].get("race_days", 1) if riders else 1) or 1)
+        if prediction_type == "gc" and group == "mountain" and race_days_value >= 5 and race_days_value <= 9:
+            career_points_pct = self._percentile_scores([r.get("career_points") for r in riders], inverse=False)
+            for idx, rider in enumerate(riders):
+                gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+                world_gc = gc_raw * 0.62 + climb_raw * 0.38
+                pcs_top_rank_raw = rider.get("pcs_top_competitor_rank")
+                pcs_top_rank_value = None if pcs_top_rank_raw in (None, "") else float(pcs_top_rank_raw)
+
+                # Stronger prior than for random stage races: mountain one-week GC
+                # should respect proven elite GC hierarchy (without hardcoding names).
+                if world_gc >= 0.62 and career_points_pct[idx] >= 0.70:
+                    adjusted_scores[idx] -= (world_gc - 0.62) * 24.0 + (career_points_pct[idx] - 0.70) * 16.0
+                    # If PCS also lists the rider as top competitor #1/#2, give an extra nudge.
+                    if pcs_top_rank_value is not None and pcs_top_rank_value <= 2.0:
+                        adjusted_scores[idx] -= (2.0 - pcs_top_rank_value) * 2.0 + 2.0
 
         order    = np.argsort(adjusted_scores)
         if (

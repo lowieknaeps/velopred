@@ -584,6 +584,9 @@ class PredictionService
 
         if ($contextPrior->isEmpty()) {
             $teamName = $rider->team?->name;
+            $pcsRanking = is_numeric($rider->pcs_ranking) && (int) $rider->pcs_ranking > 0 && (int) $rider->pcs_ranking <= 500
+                ? (int) $rider->pcs_ranking
+                : null;
             return [
                 'rider_slug'              => $rider->pcs_slug,
                 'team'                   => $teamName,
@@ -616,7 +619,7 @@ class PredictionService
                 'form_trend'              => null,
                 'age'                     => $rider->age,
                 'career_points'           => $rider->career_points,
-                'pcs_ranking'             => $rider->pcs_ranking,
+                'pcs_ranking'             => $pcsRanking,
                 'uci_ranking'             => $rider->uci_ranking,
                 'recent_avg_position'     => null,
                 'recent_top10_rate'       => null,
@@ -928,6 +931,12 @@ class PredictionService
         }
 
         $stageProfiles = $this->computeStageProfiles($prior, $currentYear);
+        // PCS ranking is a "position" (lower is better). When it becomes absurdly high,
+        // it's usually a parsing/availability issue; treat as missing so it doesn't
+        // push elite riders down via field percentiles.
+        $pcsRanking = is_numeric($rider->pcs_ranking) && (int) $rider->pcs_ranking > 0 && (int) $rider->pcs_ranking <= 500
+            ? (int) $rider->pcs_ranking
+            : null;
 
         return [
             'rider_slug'              => $rider->pcs_slug,
@@ -1026,7 +1035,7 @@ class PredictionService
             'recent_one_day_days_ago' => $recentOneDayDaysAgo,
             'recent_one_day_momentum' => $recentOneDayMomentum,
             'career_points'           => $rider->career_points,
-            'pcs_ranking'             => $rider->pcs_ranking,
+            'pcs_ranking'             => $pcsRanking,
             'uci_ranking'             => $rider->uci_ranking,
             'age'                     => $age,
             'n_results'               => $contextPrior->count(),
