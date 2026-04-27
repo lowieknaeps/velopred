@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v32"
+MODEL_VERSION = "v36"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1678,7 +1678,17 @@ class VelopredPredictor:
                         )
                         if current_year_avg_value <= 12.0:
                             breakout_strength += 0.9
-                        pcs_signal_bonus += min(5.5, breakout_strength)
+                        # In zware klassiekers (Ardennen/monument-achtig) lopen PCS specialities
+                        # vaak achter bij toptalenten. Geef daarom extra ruimte aan extreme
+                        # seizoen-vorm bij jongeren.
+                        cat_weight_raw = rider.get("category_weight")
+                        category_weight_value = float(cat_weight_raw) if cat_weight_raw not in (None, "") else 1.0
+                        heavy_one_day = group in {"classic", "hilly"} and category_weight_value >= 0.85
+                        if heavy_one_day:
+                            breakout_strength *= 2.3
+                            pcs_signal_bonus += min(14.0, breakout_strength)
+                        else:
+                            pcs_signal_bonus += min(5.5, breakout_strength)
 
                 sprinter_mismatch_penalty = 0.0
                 if prediction_type == "result" and (group in {"hilly", "classic"} or one_day_default_context):
@@ -1754,13 +1764,30 @@ class VelopredPredictor:
                         low_climb_engine = climb_raw < 0.30
                         low_hills_engine = hills_raw < 0.48
                         low_one_day_engine = one_day_raw < 0.52
+                        # Exception: jonge renners met extreem sterke recente vorm (breakout seizoen)
+                        # mogen niet volledig kapot-gedemote worden door lage PCS specialities.
+                        # Dit vangt cases op zoals Seixas in LBL.
+                        is_young_breakout = False
+                        if prediction_type == "result":
+                            age_value = None if rider_age in (None, "") else float(rider_age)
+                            current_year_avg_value = None if current_year_avg in (None, "") else float(current_year_avg)
+                            is_young_breakout = (
+                                age_value is not None
+                                and age_value <= 21.8
+                                and current_year_avg_value is not None
+                                and current_year_avg_value <= 12.5
+                                and current_year_results_count >= 6.0
+                                and current_year_top10 >= 55.0
+                            )
                         # Als iemand zowel hills als climb laag scoort, is dat
                         # vrijwel nooit een LBL-top5 profiel.
-                        if low_climb_engine and low_hills_engine and low_one_day_engine:
-                            sprinter_mismatch_penalty += 14.0 + max(0.0, 0.46 - hills_raw) * 14.0 + max(0.0, 0.28 - climb_raw) * 22.0
-                        elif low_climb_engine and hills_raw < 0.52 and sprint_raw > 0.22:
-                            sprinter_mismatch_penalty += 10.0 + max(0.0, 0.28 - climb_raw) * 26.0
-                        if low_climb_engine and low_hills_engine and gc_raw < 0.48 and sprint_raw > 0.18:
+                        # Uitzondering: jonge breakout renners (PCS specialities lopen achter).
+                        if not is_young_breakout:
+                            if low_climb_engine and low_hills_engine and low_one_day_engine:
+                                sprinter_mismatch_penalty += 14.0 + max(0.0, 0.46 - hills_raw) * 14.0 + max(0.0, 0.28 - climb_raw) * 22.0
+                            elif low_climb_engine and hills_raw < 0.52 and sprint_raw > 0.22:
+                                sprinter_mismatch_penalty += 10.0 + max(0.0, 0.28 - climb_raw) * 26.0
+                        if (not is_young_breakout) and low_climb_engine and low_hills_engine and gc_raw < 0.48 and sprint_raw > 0.18:
                             hard_sprinter_demote[idx] = True
 
                         # Zware Ardennen-klassiekers (LBL/Amstel/Fleche-achtig):
@@ -1774,7 +1801,7 @@ class VelopredPredictor:
                         if heavy_hilly:
                             # Absolute floor: if both hills+climb specialities are very low,
                             # the rider should not appear as a serious favourite in LBL-like races.
-                            if climb_raw < 0.22 and hills_raw < 0.40:
+                            if (not is_young_breakout) and climb_raw < 0.22 and hills_raw < 0.40:
                                 sprinter_mismatch_penalty += 22.0
                                 hard_sprinter_demote[idx] = True
 
@@ -1799,9 +1826,12 @@ class VelopredPredictor:
                                 hard_sprinter_demote[idx] = True
 
                             # Extra guard: low hills + low climb + sprint-leaning should be pushed way down.
-                            if low_climb_engine and low_hills_engine and (sprint_raw - max(hills_raw, climb_raw)) > 0.10:
+                            if (not is_young_breakout) and low_climb_engine and low_hills_engine and (sprint_raw - max(hills_raw, climb_raw)) > 0.10:
                                 sprinter_mismatch_penalty += 18.0
                                 hard_sprinter_demote[idx] = True
+
+                            # For breakout youngsters: no extra penalty scaling needed
+                            # because we skip the main low-engine guard above.
 
                 if abs(race_dynamics_form_adjustment) > 0:
                     # Koersverloop-signaal (bv. pech ondanks sterke koers)
@@ -1926,6 +1956,16 @@ class VelopredPredictor:
                         age_value = None if rider_age in (None, "") else float(rider_age)
                         if age_value is not None and age_value <= 22.5:
                             mitigation *= 0.72
+                            # Als de U23 ook duidelijk topvorm toont in het huidige seizoen,
+                            # mag de sample-penalty vrijwel wegvallen (breakout case).
+                            current_year_avg_value = None if current_year_avg in (None, "") else float(current_year_avg)
+                            if (
+                                current_year_avg_value is not None
+                                and current_year_avg_value <= 12.5
+                                and current_year_results_count >= 6.0
+                                and current_year_top10 >= 55.0
+                            ):
+                                mitigation *= 0.40
                         injury_penalty += sample_gap_penalty * mitigation
 
                     # Finale-conversie in klassiekers:
