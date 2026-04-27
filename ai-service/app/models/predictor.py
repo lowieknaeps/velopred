@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v39"
+MODEL_VERSION = "v40"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1365,13 +1365,24 @@ class VelopredPredictor:
                         # Absolute guard: zelfs in een zwak sprintveld mag een pure GC/klimmer niet top-10 staan.
                         if sprint_raw < 0.28 and (gc_raw > 0.45 or climb_raw > 0.55):
                             stage_role_penalty += 60.0 + (0.28 - sprint_raw) * 80.0
+                        # GC conservation: in rittenkoersen laten GC-kandidaten vrijwel altijd een massasprint lopen.
+                        # Als iemand een uitgesproken GC/klim-profiel heeft, duw hem weg uit topfavorieten van sprintetappes.
+                        if race_days >= 5 and (gc_raw >= 0.70 or climb_raw >= 0.75) and sprint_raw < 0.60:
+                            stage_role_penalty += (gc_raw - 0.70) * 55.0 + max(0.0, climb_raw - 0.75) * 40.0
+                            stage_role_penalty += (0.60 - sprint_raw) * 42.0
                     else:
                         # Reduced sprints belonen punch/hills; pure sprinters zonder punch zakken weg.
+                        sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                        hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
+                        gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
                         stage_role_penalty += max(0.0, 0.50 - speciality_hills_pct[idx]) * 18.0
                         stage_role_penalty += max(0.0, 0.55 - stage_profile_fit) * 8.0
                         # Vermijd dat pure GC-types structureel hoog blijven in reduced sprint.
                         stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.52 - speciality_hills_pct[idx]) * 22.0
                         stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.78) * max(0.0, 0.56 - sprint_profile_fit) * 14.0
+                        # Ook hier: in 1-week rittenkoersen sprinten GC-mannen zelden voor de zege.
+                        if race_days >= 5 and gc_raw >= 0.72 and hills_raw < 0.62 and sprint_profile_fit < 0.66:
+                            stage_role_penalty += (gc_raw - 0.72) * 28.0 + (0.62 - hills_raw) * 22.0 + (0.66 - sprint_profile_fit) * 26.0
 
                         if is_transition_stage:
                             # Overgangsetappes in grote rondes eindigen vaak niet op een klassieke
