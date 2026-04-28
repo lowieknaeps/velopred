@@ -209,6 +209,8 @@ class RaceController extends Controller
                 'prediction_updated_at' => $this->formatTimestamp($latestPrediction?->updated_at),
                 'outlook'   => $scenarios['outlook'] ?? '',
                 'primaryPredictionTitle' => $this->predictionContextLabel($primaryContext['prediction_type'], $primaryContext['stage_number']),
+                'primary_prediction_type' => $primaryContext['prediction_type'],
+                'primary_stage_number' => (int) $primaryContext['stage_number'],
             ],
             'signals'     => $signals,
             'contenders'  => $contenders,

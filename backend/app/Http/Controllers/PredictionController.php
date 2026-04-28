@@ -174,6 +174,8 @@ class PredictionController extends Controller
                 'prediction_model_version' => $latestPrediction?->model_version,
                 'prediction_updated_at' => $this->formatTimestamp($latestPrediction?->updated_at),
                 'primary_prediction_title' => $this->predictionContextLabel($primaryContext['prediction_type'], $primaryContext['stage_number']),
+                'primary_prediction_type' => $primaryContext['prediction_type'],
+                'primary_stage_number' => (int) $primaryContext['stage_number'],
             ],
             'predictions' => $predictionList,
             'predictionGroups' => $predictionGroups,

@@ -283,7 +283,11 @@ export default function RacesShow({
                             </div>
                         </div>
 
-                        <PredictionTable predictions={predictions} showActual={has_results} />
+                        <PredictionTable
+                            predictions={predictions}
+                            showActual={has_results}
+                            contextLink={{ race: race?.slug, type: race?.primary_prediction_type ?? 'result', stage: race?.primary_stage_number ?? 0 }}
+                        />
                     </section>
                 )}
 
@@ -310,7 +314,10 @@ export default function RacesShow({
                                         </span>
                                     </div>
 
-                                    <PredictionTable predictions={group.predictions} />
+                                    <PredictionTable
+                                        predictions={group.predictions}
+                                        contextLink={{ race: race?.slug, type: group.key?.split(':')?.[0] ?? 'result', stage: Number(group.key?.split(':')?.[1] ?? 0) }}
+                                    />
                                 </article>
                             ))}
                         </div>

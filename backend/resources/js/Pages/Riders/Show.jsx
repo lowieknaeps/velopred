@@ -12,7 +12,7 @@ function PositionBadge({ pos, status }) {
     return              <span className="text-sm text-slate-500">{pos}</span>;
 }
 
-export default function RidersShow({ rider, indicators = [], recentResults = [], upcomingPredictions = [] }) {
+export default function RidersShow({ rider, indicators = [], recentResults = [], upcomingPredictions = [], explainability = null }) {
     return (
         <AppLayout>
             <Head title={rider.name} />
@@ -141,6 +141,48 @@ export default function RidersShow({ rider, indicators = [], recentResults = [],
                                         </div>
                                     </div>
                                 </Link>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {explainability && (
+                    <section className="vp-panel p-6 sm:p-8">
+                        <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                            <div>
+                                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Waarom deze inschatting?</div>
+                                <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">
+                                    {explainability.race.context}
+                                </h2>
+                                <Link
+                                    href={`/races/${explainability.race.slug}`}
+                                    className="mt-2 inline-block text-sm font-semibold text-indigo-700 hover:underline"
+                                >
+                                    {explainability.race.name} · {explainability.race.date}
+                                </Link>
+                            </div>
+                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+                                Model {explainability.model_version}
+                            </div>
+                        </div>
+
+                        <div className="grid gap-4 lg:grid-cols-5">
+                            {explainability.signals.map((signal) => (
+                                <article key={signal.label} className="rounded-[24px] border border-slate-100 bg-white p-4">
+                                    <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{signal.label}</div>
+                                    <div
+                                        className={`mt-2 font-display text-2xl font-semibold tracking-tight ${
+                                            signal.tone === 'good'
+                                                ? 'text-emerald-700'
+                                                : signal.tone === 'bad'
+                                                  ? 'text-rose-700'
+                                                  : 'text-slate-900'
+                                        }`}
+                                    >
+                                        {signal.value}
+                                    </div>
+                                    <p className="mt-2 text-sm leading-6 text-slate-600">{signal.detail}</p>
+                                </article>
                             ))}
                         </div>
                     </section>

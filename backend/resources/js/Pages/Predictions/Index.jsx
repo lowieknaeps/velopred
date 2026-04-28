@@ -206,7 +206,11 @@ export default function PredictionsIndex({
                                     </span>
                                 </div>
 
-                                <PredictionTable predictions={filteredPredictions} showActual={race?.has_results} />
+                                <PredictionTable
+                                    predictions={filteredPredictions}
+                                    showActual={race?.has_results}
+                                    contextLink={{ race: race?.slug, type: race?.primary_prediction_type ?? 'result', stage: race?.primary_stage_number ?? 0 }}
+                                />
 
                                 {race?.has_results && (
                                     <div className="mt-6 flex flex-wrap gap-4 border-t border-slate-100 pt-4 text-xs text-slate-400">
@@ -238,7 +242,10 @@ export default function PredictionsIndex({
                                                 </span>
                                             </div>
 
-                                            <PredictionTable predictions={group.predictions} />
+                                            <PredictionTable
+                                                predictions={group.predictions}
+                                                contextLink={{ race: race?.slug, type: group.key?.split(':')?.[0] ?? 'result', stage: Number(group.key?.split(':')?.[1] ?? 0) }}
+                                            />
                                         </article>
                                     ))}
                                 </div>

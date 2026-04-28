@@ -21,8 +21,9 @@ function ActualBadge({ actual, predicted }) {
     return <span className="ml-2 text-xs font-semibold text-red-400">↓ {actual}</span>;
 }
 
-export default function PredictionTable({ predictions = [], entries = null, showActual = false }) {
+export default function PredictionTable({ predictions = [], entries = null, showActual = false, contextLink = null }) {
     const rows = entries ?? predictions;
+    const ctx = contextLink;
 
     return (
         <div className="overflow-x-auto">
@@ -49,7 +50,11 @@ export default function PredictionTable({ predictions = [], entries = null, show
                             <td className="py-3 font-medium text-slate-900">
                                 {prediction.rider_slug ? (
                                     <Link
-                                        href={`/riders/${prediction.rider_slug}`}
+                                        href={
+                                            ctx
+                                                ? `/riders/${prediction.rider_slug}?race=${encodeURIComponent(ctx.race)}&type=${encodeURIComponent(ctx.type)}&stage=${encodeURIComponent(ctx.stage ?? 0)}`
+                                                : `/riders/${prediction.rider_slug}`
+                                        }
                                         className="hover:text-indigo-700 hover:underline"
                                     >
                                         {prediction.rider}

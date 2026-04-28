@@ -6,6 +6,7 @@ use App\Models\Prediction;
 use App\Models\RaceResult;
 use App\Models\Rider;
 use App\Services\ExternalCyclingApiService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -91,7 +92,7 @@ class RiderController extends Controller
         ]);
     }
 
-    public function show(string $slug): Response
+    public function show(Request $request, string $slug): Response
     {
         $rider = Rider::where('pcs_slug', $slug)
             ->with('team')
@@ -179,6 +180,37 @@ class RiderController extends Controller
             'top10_probability' => round($prediction->top10_probability * 100, 1),
         ])->values()->toArray();
 
+        // ── Explainability (optioneel, vanuit race/context) ───────────────────
+        $explain = null;
+        $raceSlug = trim((string) $request->query('race', ''));
+        $type = trim((string) $request->query('type', ''));
+        $stage = (int) $request->query('stage', 0);
+        if ($raceSlug !== '' && $type !== '') {
+            $prediction = Prediction::query()
+                ->join('races', 'races.id', '=', 'predictions.race_id')
+                ->where('races.pcs_slug', $raceSlug)
+                ->where('predictions.rider_id', $rider->id)
+                ->where('predictions.prediction_type', $type)
+                ->when($type === 'stage', fn ($q) => $q->where('predictions.stage_number', $stage))
+                ->orderByDesc('predictions.updated_at')
+                ->select('predictions.*')
+                ->with('race:id,name,pcs_slug,start_date,parcours_type')
+                ->first();
+
+            if ($prediction) {
+                $explain = [
+                    'race' => [
+                        'slug' => $prediction->race->pcs_slug,
+                        'name' => $prediction->race->name,
+                        'date' => $prediction->race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
+                        'context' => $this->predictionContextLabel($prediction->prediction_type, (int) $prediction->stage_number),
+                    ],
+                    'model_version' => $prediction->model_version,
+                    'signals' => $this->explainSignals($prediction->features ?? [], $prediction->prediction_type),
+                ];
+            }
+        }
+
         return Inertia::render('Riders/Show', [
             'rider' => [
                 ...$this->formatRiderCard($rider),
@@ -193,7 +225,78 @@ class RiderController extends Controller
             'indicators'    => $indicators,
             'recentResults' => $resultsTable,
             'upcomingPredictions' => $upcomingTable,
+            'explainability' => $explain,
         ]);
+    }
+
+    private function explainSignals(array $features, string $predictionType): array
+    {
+        $signals = [];
+
+        $cyAvg = is_numeric($features['current_year_avg_position'] ?? null) ? (float) $features['current_year_avg_position'] : null;
+        $recentAvg = is_numeric($features['recent_avg_position'] ?? null) ? (float) $features['recent_avg_position'] : null;
+        $cyTop10 = is_numeric($features['current_year_top10_rate'] ?? null) ? (float) $features['current_year_top10_rate'] : null;
+        $courseFit = is_numeric($features['field_pct_course_fit'] ?? null) ? (float) $features['field_pct_course_fit'] : null;
+        $gcSpec = is_numeric($features['pcs_speciality_gc'] ?? null) ? ((float) $features['pcs_speciality_gc'] / 10000.0) : null;
+        $climbSpec = is_numeric($features['pcs_speciality_climber'] ?? null) ? ((float) $features['pcs_speciality_climber'] / 10000.0) : null;
+        $sprintSpec = is_numeric($features['pcs_speciality_sprint'] ?? null) ? ((float) $features['pcs_speciality_sprint'] / 10000.0) : null;
+        $incidentPenalty = is_numeric($features['manual_incident_penalty'] ?? null) ? (float) $features['manual_incident_penalty'] : 0.0;
+        $lastIncidentDays = is_numeric($features['pcs_last_incident_days_ago'] ?? null) ? (float) $features['pcs_last_incident_days_ago'] : null;
+
+        if ($cyAvg !== null || $cyTop10 !== null || $recentAvg !== null) {
+            $desc = [];
+            if ($cyAvg !== null) $desc[] = "Gem. positie 2026: #".round($cyAvg, 1);
+            if ($cyTop10 !== null) $desc[] = "Top-10 rate 2026: ".round($cyTop10, 0)."%";
+            if ($recentAvg !== null) $desc[] = "Recente gem.: #".round($recentAvg, 1);
+            $signals[] = [
+                'label' => 'Vorm',
+                'value' => $cyAvg !== null ? "#".round($cyAvg, 1) : ($recentAvg !== null ? "#".round($recentAvg, 1) : '–'),
+                'tone'  => ($cyAvg !== null && $cyAvg <= 12) || ($cyTop10 !== null && $cyTop10 >= 50) ? 'good' : (($cyAvg !== null && $cyAvg >= 22) ? 'bad' : 'neutral'),
+                'detail'=> implode(' · ', $desc),
+            ];
+        }
+
+        if ($courseFit !== null) {
+            $signals[] = [
+                'label' => 'Parcoursfit',
+                'value' => round($courseFit * 100, 0).'%',
+                'tone'  => $courseFit >= 0.75 ? 'good' : ($courseFit <= 0.40 ? 'bad' : 'neutral'),
+                'detail'=> 'Relatieve fit binnen dit startveld (parcours + context).',
+            ];
+        }
+
+        if (in_array($predictionType, ['gc', 'youth'], true) && ($gcSpec !== null || $climbSpec !== null)) {
+            $signals[] = [
+                'label' => 'GC profiel',
+                'value' => $gcSpec !== null ? round($gcSpec * 100, 0).'%' : '–',
+                'tone'  => ($gcSpec !== null && $gcSpec >= 0.70) || ($climbSpec !== null && $climbSpec >= 0.75) ? 'good' : 'neutral',
+                'detail'=> 'PCS-specialities (GC/klimmen/TT) als profiel-indicator.',
+            ];
+        }
+
+        if ($predictionType === 'stage' && $sprintSpec !== null) {
+            $signals[] = [
+                'label' => 'Sprint/Punch',
+                'value' => round($sprintSpec * 100, 0).'%',
+                'tone'  => $sprintSpec >= 0.65 ? 'good' : ($sprintSpec <= 0.30 ? 'bad' : 'neutral'),
+                'detail'=> 'PCS sprint-speciality (context-afhankelijk).',
+            ];
+        }
+
+        if ($incidentPenalty > 0.0 || ($lastIncidentDays !== null && $lastIncidentDays <= 45.0)) {
+            $detail = $incidentPenalty > 0 ? "Incident-penalty: ".round($incidentPenalty * 100, 0)."%" : null;
+            if ($lastIncidentDays !== null) {
+                $detail = trim(($detail ? $detail.' · ' : '')."Laatste incident: ".round($lastIncidentDays, 0)."d geleden");
+            }
+            $signals[] = [
+                'label' => 'Incident',
+                'value' => $incidentPenalty > 0 ? '-'.round($incidentPenalty * 100, 0).'%' : '–',
+                'tone'  => 'bad',
+                'detail'=> $detail ?: 'Recente incidenten / comeback-signaal.',
+            ];
+        }
+
+        return array_slice($signals, 0, 5);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
