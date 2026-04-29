@@ -83,6 +83,17 @@ class RiderSyncService
 
     private function syncFromRaceEntry(array $entry): Rider
     {
+        // PCS slugs are usually stable, but a few riders have multiple slugs over time
+        // (e.g. "tom-pidcock" vs "thomas-pidcock"). Canonicalize known aliases to
+        // avoid duplicate rider records and broken form/features.
+        $canonicalSlugByAlias = [
+            'tom-pidcock' => 'thomas-pidcock',
+        ];
+
+        if (!empty($entry['rider_slug']) && isset($canonicalSlugByAlias[$entry['rider_slug']])) {
+            $entry['rider_slug'] = $canonicalSlugByAlias[$entry['rider_slug']];
+        }
+
         // Team aanmaken / ophalen
         $team = null;
         if (!empty($entry['team_slug']) && $entry['team_slug'] !== 'team') {
