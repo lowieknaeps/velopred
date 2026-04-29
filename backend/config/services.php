@@ -36,7 +36,9 @@ return [
     ],
 
     'ai_service' => [
-        'url' => env('AI_SERVICE_URL', 'http://127.0.0.1:8000'),
+        // Default to :8001 because the AI service and scraper are typically run there in local dev.
+        // Can be overridden via AI_SERVICE_URL in the environment.
+        'url' => env('AI_SERVICE_URL', 'http://127.0.0.1:8001'),
     ],
 
 ];
