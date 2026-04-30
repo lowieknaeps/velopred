@@ -6,10 +6,16 @@ Regelt rate limiting zodat we niet geblokkeerd worden.
 import time
 import re
 import cloudscraper
+from requests.exceptions import ConnectionError, Timeout, RequestException
 
 _scraper = cloudscraper.create_scraper()
 _last_request_at: float = 0
 MIN_DELAY = 1.2  # seconden tussen requests
+
+# Cloudflare blocks direct HTML requests for some pages. As a fallback we can
+# fetch through r.jina.ai, which returns the HTML text via a proxy.
+JINA_PREFIX = "https://r.jina.ai/http://www.procyclingstats.com/"
+MAX_RETRIES = 3
 
 
 def fetch(path: str) -> str:
@@ -26,10 +32,36 @@ def fetch(path: str) -> str:
         time.sleep(MIN_DELAY - elapsed)
 
     url = f"https://www.procyclingstats.com/{path}"
-    response = _scraper.get(url)
-    _last_request_at = time.time()
-    response.raise_for_status()
-    return response.text
+
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = _scraper.get(url, timeout=20)
+            _last_request_at = time.time()
+
+            # If Cloudflare blocks us (403), retry via jina.ai proxy.
+            if response.status_code == 403:
+                proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
+                response = _scraper.get(proxy_url, timeout=20)
+                _last_request_at = time.time()
+
+            response.raise_for_status()
+            return response.text
+        except (ConnectionError, Timeout, RequestException) as e:
+            last_exc = e
+            # Backoff to avoid hammering PCS when it closes connections.
+            time.sleep(0.8 * attempt)
+            continue
+
+    # If repeated connection issues: last resort try jina.ai once.
+    if last_exc is not None:
+        proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
+        response = _scraper.get(proxy_url, timeout=25)
+        _last_request_at = time.time()
+        response.raise_for_status()
+        return response.text
+
+    raise RuntimeError("fetch failed unexpectedly")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

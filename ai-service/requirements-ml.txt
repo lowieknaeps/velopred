@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn==0.30.0
+procyclingstats==0.2.8
+cloudscraper==1.2.71
+selectolax==0.3.26
+joblib==1.5.2
+
+# ML deps (use Python 3.11+ wheels in Docker)
+numpy==2.2.6
+pandas==2.2.3
+scikit-learn==1.6.1

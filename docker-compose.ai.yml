@@ -1,0 +1,8 @@
+services:
+  velopred-ai:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8001"
+    restart: unless-stopped
