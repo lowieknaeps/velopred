@@ -17,6 +17,24 @@ Dus:
 
 `startlijst + historiek + vorm + parcoursfit -> score -> ranking -> winkans`
 
+## Runtime: waar draait dit model?
+
+Velopred splitst “webapp” en “AI” op:
+
+- **Laravel (PHP)**: UI, database, orchestratie van sync + predict
+- **AI-service (FastAPI, Python)**: PCS scraping + ML training + predictions
+
+In lokale development draait de AI-service bij voorkeur via Docker, omdat de ML dependencies (`numpy/pandas/scikit-learn`) niet op elke machine even vlot installeren:
+
+- AI-service (Docker): `http://127.0.0.1:8002`
+- (Legacy) AI-service (lokaal): `http://127.0.0.1:8001`
+
+Laravel kan je expliciet naar de juiste AI-service laten wijzen met:
+
+```bash
+AI_SERVICE_URL=http://127.0.0.1:8002 php artisan predict:race e3-harelbeke 2026
+```
+
 ## Belangrijk om te weten
 
 Dit is geen groot taalmodel of chatmodel.

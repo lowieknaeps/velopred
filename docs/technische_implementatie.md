@@ -48,7 +48,7 @@ Browser → Laravel (port 8080)
               ↓
            SQLite DB
 
-Laravel → FastAPI (port 8000)  ← scrapt ProcyclingStats
+Laravel → FastAPI (port 8002, Docker)  ← scrapt ProcyclingStats
 ```
 
 Laravel is de centrale orchestrator: hij vraagt data op bij de AI-service,
@@ -177,7 +177,7 @@ ai-service/
 | GET | `/scrape/rider/{slug}` | Renner profiel + specialiteiten |
 | GET | `/scrape/rider/{slug}/results` | Recente koersresultaten |
 
-De volledige interactieve documentatie is beschikbaar op `http://localhost:8000/docs` (automatisch gegenereerd door FastAPI via OpenAPI).
+De volledige interactieve documentatie is beschikbaar op `http://localhost:8002/docs` (automatisch gegenereerd door FastAPI via OpenAPI).
 
 ### Hulpfuncties in `scraper.py`
 
@@ -283,7 +283,7 @@ $rider = $api->getRider('tadej-pogacar');
 
 De URL van de AI-service is configureerbaar via `.env`:
 ```
-AI_SERVICE_URL=http://localhost:8001
+AI_SERVICE_URL=http://localhost:8002
 ```
 
 Bij een 404 gooit de service een `RuntimeException` zodat de aanroeper weet dat de data niet beschikbaar is op PCS (bv. resultaten van een race die nog niet gereden is).
@@ -336,7 +336,7 @@ Beide jobs hebben een timeout van 5 minuten en worden maximaal 2 keer geprobeerd
 ### Configuratie
 
 ```env
-AI_SERVICE_URL=http://127.0.0.1:8001   # URL van de Python AI-service
+AI_SERVICE_URL=http://127.0.0.1:8002   # URL van de Python AI-service (Docker)
 ```
 
 ---
