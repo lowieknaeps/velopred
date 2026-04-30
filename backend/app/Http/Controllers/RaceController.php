@@ -147,8 +147,11 @@ class RaceController extends Controller
             ];
         })->values()->toArray();
 
-        $predictionGroups = $this->formatPredictionGroups($race, $predictions, $primaryContext);
-        $resultGroups = $this->formatResultGroups($race, $primaryContext);
+        $allActualResults = $race->results()
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->get(['rider_id', 'result_type', 'stage_number', 'position']);
+        $predictionGroups = $this->formatPredictionGroups($race, $predictions, $primaryContext, $allActualResults);
 
         // ── Contenders (voor het Show component) ───────────────────────────
         $contenders = [];
@@ -217,83 +220,10 @@ class RaceController extends Controller
             'contenders'  => $contenders,
             'predictions' => $predictionList,
             'predictionGroups' => $predictionGroups,
-            'resultGroups' => $resultGroups,
             'scenarios'   => $scenarios['list'] ?? [],
             'has_results' => $actualResults->isNotEmpty(),
             'evaluation'  => $this->formatEvaluationPayload($race, $primaryContext),
         ]);
-    }
-
-    private function formatResultGroups(Race $race, array $primaryContext): array
-    {
-        $stages = is_array($race->stages_json) ? $race->stages_json : [];
-
-        $results = $race->results()
-            ->whereNotNull('position')
-            ->where('status', 'finished')
-            ->with('rider.team')
-            ->get()
-            ->groupBy(fn ($r) => $r->result_type . ':' . (int) ($r->stage_number ?? 0));
-
-        return $results
-            ->sortBy(function ($group) {
-                $first = $group->first();
-                return $this->predictionContextSort((string) $first->result_type, (int) ($first->stage_number ?? 0));
-            })
-            ->map(function ($group) use ($primaryContext) {
-                $first = $group->first();
-                $type = (string) $first->result_type;
-                $stageNumber = (int) ($first->stage_number ?? 0);
-
-                return [
-                    'key'        => $type . ':' . $stageNumber,
-                    'title'      => $this->predictionContextLabel($type, $stageNumber),
-                    'subtitle'   => null,
-                    'is_primary' => $type === ($primaryContext['prediction_type'] ?? 'result')
-                        && $stageNumber === (int) ($primaryContext['stage_number'] ?? 0),
-                    'results'    => $group
-                        ->sortBy('position')
-                        ->take(10)
-                        ->map(fn ($result) => [
-                            'position'   => (int) $result->position,
-                            'rider_slug' => $result->rider->pcs_slug,
-                            'rider'      => $result->rider->full_name,
-                            'team'       => $result->rider->team?->name ?? '–',
-                        ])
-                        ->values()
-                        ->toArray(),
-                ];
-            })
-            ->map(function (array $payload) use ($stages) {
-                [$type, $stageNumber] = explode(':', (string) ($payload['key'] ?? 'result:0')) + [null, 0];
-                if ($type !== 'stage') {
-                    return $payload;
-                }
-
-                $stageNr = (int) $stageNumber;
-                $stage = collect($stages)->first(fn ($s) => (int) ($s['number'] ?? 0) === $stageNr) ?? [];
-
-                $subtype = (string) ($stage['stage_subtype'] ?? '');
-                $parcours = (string) ($stage['parcours_type'] ?? '');
-
-                $label = match (true) {
-                    $subtype === 'sprint' => 'Sprintetappe',
-                    $subtype === 'reduced_sprint' => 'Heuvel / punch',
-                    $subtype === 'summit_finish' => 'Bergetappe (aankomst bergop)',
-                    $subtype === 'high_mountain' => 'Hoge bergen',
-                    $subtype === 'tt' => 'Tijdrit',
-                    $subtype === 'ttt' => 'Ploegentijdrit',
-                    $parcours === 'flat' => 'Vlakke etappe',
-                    $parcours === 'hilly' => 'Heuveletappe',
-                    $parcours === 'mountain' => 'Bergetappe',
-                    default => 'Gemengde etappe',
-                };
-
-                $payload['subtitle'] = $label;
-                return $payload;
-            })
-            ->values()
-            ->all();
     }
 
     public function rerunModel(string $slug): RedirectResponse
@@ -938,9 +868,12 @@ class RaceController extends Controller
         };
     }
 
-    private function formatPredictionGroups(Race $race, $predictions, array $primaryContext): array
+    private function formatPredictionGroups(Race $race, $predictions, array $primaryContext, $actualResults): array
     {
         $stages = is_array($race->stages_json) ? $race->stages_json : [];
+        $actualByContext = collect($actualResults)
+            ->groupBy(fn ($r) => (string) $r->result_type . ':' . (int) ($r->stage_number ?? 0))
+            ->map(fn ($group) => $group->keyBy('rider_id'));
 
         return $predictions
             ->groupBy(fn($prediction) => $prediction->prediction_type . ':' . (int) $prediction->stage_number)
@@ -948,8 +881,10 @@ class RaceController extends Controller
                 $group->first()->prediction_type,
                 (int) $group->first()->stage_number
             ))
-            ->map(function ($group) use ($primaryContext) {
+            ->map(function ($group) use ($primaryContext, $actualByContext) {
                 $first = $group->first();
+                $ctxKey = $first->prediction_type . ':' . (int) $first->stage_number;
+                $actualForCtx = $actualByContext->get($ctxKey, collect());
 
                 return [
                     'key'        => $first->prediction_type . ':' . (int) $first->stage_number,
@@ -968,6 +903,7 @@ class RaceController extends Controller
                             'win_probability'   => round($prediction->win_probability * 100, 1),
                             'top10_probability' => round($prediction->top10_probability * 100, 1),
                             'confidence'        => round($prediction->confidence_score * 100, 0),
+                            'actual_position'   => $actualForCtx->get($prediction->rider_id)?->position,
                         ])
                         ->values()
                         ->toArray(),

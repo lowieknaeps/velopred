@@ -11,7 +11,6 @@ export default function RacesShow({
     contenders = [],
     predictions = [],
     predictionGroups = [],
-    resultGroups = [],
     scenarios = [],
     has_results = false,
 }) {
@@ -23,7 +22,6 @@ export default function RacesShow({
     const previousRerunStatus = useRef('idle');
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
-    const hasAnyResults = Array.isArray(resultGroups) && resultGroups.length > 0;
 
     const rerunModel = () => {
         setRerunStatus('idle');
@@ -293,55 +291,6 @@ export default function RacesShow({
                     </section>
                 )}
 
-                {hasAnyResults && (
-                    <section className="space-y-4">
-                        <h2 className="font-display text-xl font-semibold text-slate-950">Uitslagen</h2>
-                        <div className="grid gap-4 xl:grid-cols-2">
-                            {resultGroups.map((group) => (
-                                <article key={group.key} className="vp-panel p-5">
-                                    <div className="mb-4 flex items-center justify-between gap-3">
-                                        <div>
-                                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Uitslag</div>
-                                            <h3 className="mt-2 font-display text-xl font-semibold tracking-tight text-slate-950">{group.title}</h3>
-                                            {group.subtitle && (
-                                                <div className="mt-2 text-sm font-semibold text-slate-600">{group.subtitle}</div>
-                                            )}
-                                        </div>
-                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                                            Top 10
-                                        </span>
-                                    </div>
-
-                                    <div className="overflow-hidden rounded-2xl border border-slate-200">
-                                        <table className="w-full text-left text-sm">
-                                            <thead className="bg-slate-50 text-xs uppercase tracking-[0.16em] text-slate-500">
-                                                <tr>
-                                                    <th className="px-4 py-3">#</th>
-                                                    <th className="px-4 py-3">Renner</th>
-                                                    <th className="px-4 py-3">Ploeg</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {group.results.map((row) => (
-                                                    <tr key={`${group.key}-${row.rider_slug}-${row.position}`} className="border-t border-slate-200">
-                                                        <td className="px-4 py-3 font-semibold text-slate-700">{row.position}</td>
-                                                        <td className="px-4 py-3 font-semibold text-slate-900">
-                                                            <a href={`/riders/${row.rider_slug}`} className="hover:underline">
-                                                                {row.rider}
-                                                            </a>
-                                                        </td>
-                                                        <td className="px-4 py-3 text-slate-600">{row.team}</td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </article>
-                            ))}
-                        </div>
-                    </section>
-                )}
-
                 {evaluation && (
                     <PredictionEvaluationPanel evaluation={evaluation} />
                 )}
@@ -367,6 +316,7 @@ export default function RacesShow({
 
                                     <PredictionTable
                                         predictions={group.predictions}
+                                        showActual={group.predictions?.some((row) => row.actual_position != null)}
                                         contextLink={{ race: race?.slug, type: group.key?.split(':')?.[0] ?? 'result', stage: Number(group.key?.split(':')?.[1] ?? 0) }}
                                     />
                                 </article>

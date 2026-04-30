@@ -160,7 +160,9 @@ def scrape_race(slug: str, year: int):
             "parcours_type": parcours_type,
             "stages": [
                 {
-                    "number": i + 1,
+                    # PCS stage URL is authoritative when it contains a numeric stage number.
+                    # This avoids off-by-one issues around prologues/rest days.
+                    "number": int(str(s["stage_url"]).split("/")[-1]) if str(s["stage_url"]).split("/")[-1].isdigit() else i + 1,
                     "stage_url": s["stage_url"],
                     "stage_slug": s["stage_url"].split("/")[-1],
                     "name": s["stage_name"],
