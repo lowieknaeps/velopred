@@ -864,9 +864,10 @@ class RaceController extends Controller
     private function predictionContextSort(string $predictionType, int $stageNumber = 0): int
     {
         return match($predictionType) {
-            'gc'     => 0,
+            // Stage races: show stage contexts first in natural order, then classifications.
+            'stage'  => 10 + $stageNumber,
             'result' => 50,
-            'stage'  => 100 + $stageNumber,
+            'gc'     => 200,
             'points' => 300,
             'kom'    => 400,
             'youth'  => 500,
