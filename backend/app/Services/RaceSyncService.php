@@ -90,6 +90,21 @@ class RaceSyncService
         $this->syncStartlist($race);
     }
 
+    /**
+     * Sync exactly one stage result. Useful as a recovery path when PCS blocks the
+     * main race metadata scrape, but stage endpoints are still available.
+     *
+     * @param int $pcsStageNumber Stage number used by PCS endpoint (/stage/{nr}); prologue is often 0.
+     * @param int $displayStageNumber Stage number we store in race_results for UI/prediction alignment.
+     */
+    public function syncSingleStageResult(Race $race, int $pcsStageNumber, int $displayStageNumber): void
+    {
+        $data = $this->api->getStageResult($race->pcs_slug, $race->year, $pcsStageNumber);
+        $this->replaceResults($race, 'stage', $displayStageNumber);
+        $this->saveResults($race, $data['results'], 'stage', $displayStageNumber);
+        Log::info("[RaceSync] Single stage saved: {$race->pcs_slug} {$race->year} display={$displayStageNumber} pcs={$pcsStageNumber}");
+    }
+
     private function syncStartlist(Race $race): void
     {
         try {
@@ -158,14 +173,17 @@ class RaceSyncService
         $stages = $raceData['stages'] ?? [];
 
         foreach ($stages as $stage) {
-            $nr = $stage['number'];
+            $displayNr = (int) ($stage['number'] ?? 0);
+            $pcsNr = isset($stage['pcs_stage_number']) && is_numeric($stage['pcs_stage_number'])
+                ? (int) $stage['pcs_stage_number']
+                : $displayNr;
             try {
-                $data = $this->api->getStageResult($race->pcs_slug, $race->year, $nr);
-                $this->replaceResults($race, 'stage', $nr);
-                $this->saveResults($race, $data['results'], 'stage', $nr);
-                Log::info("[RaceSync] Etappe {$nr} opgeslagen");
+                $data = $this->api->getStageResult($race->pcs_slug, $race->year, $pcsNr);
+                $this->replaceResults($race, 'stage', $displayNr);
+                $this->saveResults($race, $data['results'], 'stage', $displayNr);
+                Log::info("[RaceSync] Etappe {$displayNr} opgeslagen (PCS stage {$pcsNr})");
             } catch (\RuntimeException $e) {
-                Log::warning("[RaceSync] Etappe {$nr} niet beschikbaar: {$e->getMessage()}");
+                Log::warning("[RaceSync] Etappe {$displayNr} niet beschikbaar: {$e->getMessage()}");
             }
         }
 
