@@ -812,9 +812,31 @@ class RaceController extends Controller
 
     private function primaryPredictionContext(Race $race): array
     {
-        return $race->isOneDay()
-            ? ['prediction_type' => 'result', 'stage_number' => 0]
-            : ['prediction_type' => 'gc', 'stage_number' => 0];
+        if ($race->isOneDay()) {
+            return ['prediction_type' => 'result', 'stage_number' => 0];
+        }
+
+        // Stage races: prefer a context that actually has results, otherwise the UI looks "empty"
+        // even though stage results might already be available.
+        $hasGc = $race->results()
+            ->where('result_type', 'gc')
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->exists();
+        if ($hasGc) {
+            return ['prediction_type' => 'gc', 'stage_number' => 0];
+        }
+
+        $latestStage = $race->results()
+            ->where('result_type', 'stage')
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->max('stage_number');
+        if ($latestStage) {
+            return ['prediction_type' => 'stage', 'stage_number' => (int) $latestStage];
+        }
+
+        return ['prediction_type' => 'gc', 'stage_number' => 0];
     }
 
     private function predictionContextLabel(string $predictionType, int $stageNumber = 0): string

@@ -39,6 +39,16 @@ class SyncRaceCommand extends Command
                 ]]
             );
 
+            $resultCount = \App\Models\RaceResult::where('race_id', $race->id)
+                ->whereNotNull('position')
+                ->where('status', 'finished')
+                ->count();
+            if ($resultCount === 0) {
+                $this->warn("⚠️  Geen resultaten opgeslagen (PCS kan ze nog niet tonen of scrape faalde).");
+            } else {
+                $this->line("📄 Resultaten opgeslagen: {$resultCount}");
+            }
+
             if ($postSync['evaluated'] ?? false) {
                 $this->line("📊 Evaluatie opgeslagen en {$postSync['refreshed_upcoming_predictions']} upcoming eendagskoersen vernieuwd.");
             }

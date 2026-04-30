@@ -8,6 +8,7 @@ use App\Services\RaceSyncService;
 use App\Services\UpcomingOneDayPredictionRefreshService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -44,7 +45,8 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
         $finished = Race::whereDate('end_date', '<=', $yesterday)
             ->where(function ($q) {
                 $q->whereNull('synced_at')
-                  ->orWhereRaw("synced_at < date(end_date, '+2 days')");
+                  // SQLite and MySQL use different date arithmetic syntax.
+                  ->orWhereRaw($this->staleAfterEndDateSql('+2 days'));
             })
             ->get();
 
@@ -177,5 +179,24 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
         if ($imminentRaces->isNotEmpty() || $evaluatedTodayFinishedOneDay) {
             $predictionRefreshService->refreshDateRange($today, $tomorrow);
         }
+    }
+
+    private function staleAfterEndDateSql(string $offset): string
+    {
+        $driver = DB::connection()->getDriverName();
+
+        // We want: synced_at < end_date + N days
+        if ($driver === 'mysql') {
+            // offset is expected like "+2 days"
+            if (preg_match('/\\+(\\d+)\\s+days?/i', $offset, $m)) {
+                $days = (int) $m[1];
+                return "synced_at < DATE_ADD(end_date, INTERVAL {$days} DAY)";
+            }
+            // fallback: be conservative
+            return "synced_at < end_date";
+        }
+
+        // SQLite: date(end_date, '+2 days')
+        return "synced_at < date(end_date, '{$offset}')";
     }
 }
