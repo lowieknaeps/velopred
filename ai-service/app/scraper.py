@@ -44,6 +44,10 @@ def fetch(path: str) -> str:
                 proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
                 response = _scraper.get(proxy_url, timeout=20)
                 _last_request_at = time.time()
+                # r.jina.ai can return 451 for some rider pages; fall back to direct PCS.
+                if response.status_code == 451:
+                    response = _scraper.get(url, timeout=20)
+                    _last_request_at = time.time()
 
             response.raise_for_status()
             return response.text
@@ -53,13 +57,19 @@ def fetch(path: str) -> str:
             time.sleep(0.8 * attempt)
             continue
 
-    # If repeated connection issues: last resort try jina.ai once.
+    # If repeated issues: last resort try jina.ai once (and never crash the whole service with an uncaught HTTPError).
     if last_exc is not None:
-        proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
-        response = _scraper.get(proxy_url, timeout=25)
-        _last_request_at = time.time()
-        response.raise_for_status()
-        return response.text
+        try:
+            proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
+            response = _scraper.get(proxy_url, timeout=25)
+            _last_request_at = time.time()
+            if response.status_code == 451:
+                response = _scraper.get(url, timeout=25)
+                _last_request_at = time.time()
+            response.raise_for_status()
+            return response.text
+        except (ConnectionError, Timeout, RequestException) as e:
+            raise RuntimeError(f"PCS fetch failed for {path}: {e}") from e
 
     raise RuntimeError("fetch failed unexpectedly")
 

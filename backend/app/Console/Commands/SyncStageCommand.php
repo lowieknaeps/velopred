@@ -31,14 +31,24 @@ class SyncStageCommand extends Command
         $api = new ExternalCyclingApiService();
         $service = new RaceSyncService($api, new RiderSyncService($api));
 
-        try {
-            $service->syncSingleStageResult($race, $pcsStage, $displayStage);
-            $this->info("✅ Etappe opgeslagen");
-            return self::SUCCESS;
-        } catch (\Throwable $e) {
-            $this->error("❌ Fout: " . $e->getMessage());
-            return self::FAILURE;
+        $candidates = [$pcsStage];
+        // Prologues are inconsistent: some races expose the prologue as stage-1 (not stage-0).
+        if ($pcsStage === 0) {
+            $candidates[] = 1;
         }
+
+        $lastError = null;
+        foreach (array_values(array_unique($candidates)) as $candidate) {
+            try {
+                $service->syncSingleStageResult($race, (int) $candidate, $displayStage);
+                $this->info("✅ Etappe opgeslagen (PCS stage {$candidate})");
+                return self::SUCCESS;
+            } catch (\Throwable $e) {
+                $lastError = $e;
+            }
+        }
+
+        $this->error("❌ Fout: " . ($lastError?->getMessage() ?? 'Onbekend'));
+        return self::FAILURE;
     }
 }
-

@@ -14,10 +14,12 @@ Endpoints:
   GET /scrape/rider/{slug}/results             → recente resultaten renner
 """
 
+import re
+
 from fastapi import APIRouter, HTTPException
 from procyclingstats import Race, RaceStartlist, Stage, Rider, RiderResults
 from procyclingstats.errors import ExpectedParsingError
-from requests.exceptions import HTTPError
+from requests.exceptions import HTTPError, RequestException
 from selectolax.parser import HTMLParser
 
 from app.scraper import (
@@ -160,9 +162,10 @@ def scrape_race(slug: str, year: int):
             "parcours_type": parcours_type,
             "stages": [
                 {
-                    # PCS stage URL is authoritative when it contains a numeric stage number.
-                    # This avoids off-by-one issues around prologues/rest days.
-                    "number": int(str(s["stage_url"]).split("/")[-1]) if str(s["stage_url"]).split("/")[-1].isdigit() else i + 1,
+                    # Display number is always sequential (Etappe 1..N) to match user expectations.
+                    "number": i + 1,
+                    # PCS stage number is what we need for /stage/{nr} endpoints. Prologues are often "0".
+                    "pcs_stage_number": _parse_pcs_stage_number(s.get("stage_url"), s.get("stage_name")),
                     "stage_url": s["stage_url"],
                     "stage_slug": s["stage_url"].split("/")[-1],
                     "name": s["stage_name"],
@@ -175,6 +178,8 @@ def scrape_race(slug: str, year: int):
         }
     except (ValueError, ExpectedParsingError) as e:
         raise HTTPException(status_code=404, detail=f"Race niet gevonden: {e}")
+    except (HTTPError, RequestException, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=f"PCS fetch blocked/failed: {e}")
 
 
 @router.get("/race/{slug}/{year}/startlist")
@@ -202,6 +207,8 @@ def scrape_startlist(slug: str, year: int):
         }
     except (ValueError, ExpectedParsingError) as e:
         raise HTTPException(status_code=404, detail=f"Startlijst niet gevonden: {e}")
+    except (HTTPError, RequestException, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=f"PCS fetch blocked/failed: {e}")
 
 
 @router.get("/race/{slug}/{year}/top-competitors")
@@ -283,6 +290,8 @@ def scrape_stage(slug: str, year: int, stage_nr: int):
         }
     except (ValueError, ExpectedParsingError) as e:
         raise HTTPException(status_code=404, detail=f"Etappe niet gevonden: {e}")
+    except (HTTPError, RequestException, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=f"PCS fetch blocked/failed: {e}")
 
 
 @router.get("/race/{slug}/{year}/gc")
@@ -480,6 +489,8 @@ def scrape_rider_results(slug: str, season: int | None = None):
         }
     except (ValueError, ExpectedParsingError, AttributeError) as e:
         raise HTTPException(status_code=404, detail=f"Resultaten niet gevonden: {e}")
+    except (HTTPError, RequestException, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=f"PCS fetch blocked/failed: {e}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -520,6 +531,29 @@ def _parse_status(value) -> str:
 def _parse_int(value: str | None) -> int | None:
     if value is None:
         return None
+
+
+def _parse_pcs_stage_number(stage_url: str | None, stage_name: str | None) -> int | None:
+    """
+    Extract PCS stage number for /stage/{nr}. PCS sometimes uses a prologue that maps to 0.
+    We prefer a number embedded in the URL; otherwise detect prologue by name.
+    """
+    if stage_url:
+        try:
+            m = re.search(r"/stage/(\\d+)$", stage_url)
+            if m:
+                return int(m.group(1))
+            # Fallback: last trailing digits anywhere in URL.
+            m2 = re.search(r"(\\d+)$", stage_url)
+            if m2:
+                return int(m2.group(1))
+        except Exception:
+            pass
+
+    if stage_name and ("proloog" in stage_name.lower() or "prologue" in stage_name.lower()):
+        return 0
+
+    return None
 
     digits = "".join(ch for ch in value if ch.isdigit())
     return int(digits) if digits else None
