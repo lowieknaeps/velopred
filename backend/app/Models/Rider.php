@@ -29,6 +29,7 @@ class Rider extends Model
         'age_approx',
         'synced_at',
         'profile_synced_at',
+        'results_synced_at',
     ];
 
     protected $casts = [
@@ -37,6 +38,7 @@ class Rider extends Model
         'pcs_height_m'  => 'float',
         'synced_at'     => 'datetime',
         'profile_synced_at' => 'datetime',
+        'results_synced_at' => 'datetime',
     ];
 
     // ── Relaties ──────────────────────────────────────────────────────────────
@@ -49,6 +51,11 @@ class Rider extends Model
     public function raceResults(): HasMany
     {
         return $this->hasMany(RaceResult::class);
+    }
+
+    public function riderResults(): HasMany
+    {
+        return $this->hasMany(RiderResult::class);
     }
 
     public function predictions(): HasMany

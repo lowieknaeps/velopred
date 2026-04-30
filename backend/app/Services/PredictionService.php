@@ -7,6 +7,7 @@ use App\Models\Race;
 use App\Models\RaceEntry;
 use App\Models\Rider;
 use App\Models\RaceResult;
+use App\Models\RiderResult;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -32,6 +33,38 @@ class PredictionService
     private array $pcsSeasonSignalsCache = [];
     private array $topCompetitorCache = [];
     private array $raceTeamSignalsCache = [];
+
+    private function hydrateRiderForPrediction(Rider $rider): void
+    {
+        // If rider records were created from startlists only (common after DB migrations),
+        // some PCS fields can be null which heavily hurts feature quality.
+        $needsProfile = !$rider->profile_synced_at
+            || $rider->profile_synced_at->lt(now()->subDays(45))
+            || $rider->pcs_speciality_sprint === null
+            || $rider->pcs_speciality_climber === null
+            || $rider->pcs_speciality_hills === null
+            || $rider->pcs_speciality_tt === null
+            || $rider->pcs_speciality_gc === null;
+
+        if (!$needsProfile) {
+            return;
+        }
+
+        // Avoid a network storm: only hydrate riders that are likely to matter for predictions.
+        $isLikelyContender = (($rider->career_points ?? 0) >= 500)
+            || (($rider->pcs_ranking ?? 9999) <= 300);
+
+        if (!$isLikelyContender) {
+            return;
+        }
+
+        try {
+            // Keep the rider slug as-is; RiderSyncService is responsible for resolving aliases.
+            $this->riderSync->syncRider($rider->pcs_slug);
+        } catch (\Throwable $e) {
+            Log::info("[Prediction] Rider hydration failed for {$rider->pcs_slug}: {$e->getMessage()}");
+        }
+    }
 
     public function __construct(
         private ExternalCyclingApiService $api,
@@ -65,6 +98,7 @@ class PredictionService
             foreach ($riderIds->chunk(50) as $chunk) {
                 $riders = Rider::whereIn('id', $chunk)->get();
                 foreach ($riders as $rider) {
+                    $this->hydrateRiderForPrediction($rider);
                     if (!$this->isEligibleForPredictionContext($rider, $race, $context)) {
                         continue;
                     }
@@ -225,6 +259,51 @@ class PredictionService
 
         Log::info("[Prediction] {$saved} voorspellingen opgeslagen voor {$race->name}");
         return $saved;
+    }
+
+    /**
+     * "Vorm" moet niet afhangen van welke races wij al in `races`/`race_results` gesynct hebben.
+     * We cachen daarom PCS rider results per renner in `rider_results` en gebruiken die
+     * als prior wanneer er te weinig RaceResult context beschikbaar is.
+     */
+    private function cachedRiderResultsPrior(Rider $rider, Race $race): Collection
+    {
+        $cutoff = $race->start_date->copy()->startOfDay();
+
+        return RiderResult::query()
+            ->where('rider_id', $rider->id)
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->where('position', '<=', 100)
+            ->whereNotNull('date')
+            ->where('date', '<', $cutoff->toDateString())
+            ->where('season', '>=', self::MIN_YEAR)
+            ->orderBy('date', 'asc')
+            ->limit(120)
+            ->get([
+                'date',
+                'position',
+                'race_class',
+                'race_slug',
+                'race_name',
+            ])
+            ->map(function (RiderResult $res) {
+                // We don't have parcours/stage subtype at this level yet; keep it generic.
+                return (object) [
+                    'race_id' => null,
+                    'position' => (int) $res->position,
+                    'gap_seconds' => null,
+                    'result_type' => 'result',
+                    'stage_number' => null,
+                    'race_year' => (int) ($res->season ?? (int) $res->date?->format('Y')),
+                    'race_start_date' => $res->date?->toDateString(),
+                    'parcours_type' => null,
+                    'race_slug' => $res->race_slug,
+                    'stages_json' => null,
+                    'context_parcours_type' => 'default',
+                    'context_stage_subtype' => null,
+                ];
+            });
     }
 
     private function refreshStageRaceClassificationsFromStages(Race $race): void
@@ -530,7 +609,7 @@ class PredictionService
         $liveStageTop10Count = $liveStageResults->filter(fn ($result) => (int) $result->position <= 10)->count();
         $liveClassificationPosition = $liveClassification?->position;
 
-        // Historische resultaten vóór deze race
+        // Historische resultaten vóór deze race (uit onze gesyncte races)
         $prior = RaceResult::where('rider_id', $rider->id)
             ->whereIn('result_type', ['result', 'stage', 'gc', 'points', 'kom', 'youth'])
             ->whereNotNull('position')
@@ -570,6 +649,22 @@ class PredictionService
 
             return $result;
         });
+
+        // Feature drop fix:
+        // Combine our synced RaceResult history with the cached PCS rider_results history,
+        // so form doesn't depend on which races we already have in `races`.
+        // Avoid double-counting races we already have (same race_slug).
+        $fallbackPrior = $this->cachedRiderResultsPrior($rider, $race);
+        if ($fallbackPrior->isNotEmpty()) {
+            $existingSlugs = $prior->pluck('race_slug')->filter()->unique()->all();
+            $fallbackPrior = $fallbackPrior->filter(fn ($row) => empty($row->race_slug) || !in_array($row->race_slug, $existingSlugs, true));
+
+            if ($fallbackPrior->isNotEmpty()) {
+                $prior = $prior->concat($fallbackPrior)
+                    ->sortBy('race_start_date')
+                    ->values();
+            }
+        }
 
         $contextPrior = $prior->filter(
             fn($result) => in_array(
@@ -2133,12 +2228,16 @@ class PredictionService
         }
 
         $topCompetitorRank = isset($pcsTopCompetitor['rank']) ? (int) $pcsTopCompetitor['rank'] : null;
-        $shouldFetch = $race->isOneDay()
-            && (
-                ($topCompetitorRank !== null && $topCompetitorRank <= 20)
-                || (($rider->pcs_ranking ?? 9999) <= 40)
-                || (($rider->career_points ?? 0) >= 700)
-            );
+
+        // Feature drop fix:
+        // When syncing or migrating DBs, rider "season form" signals can be missing for stage races,
+        // which makes top riders look artificially weak. Fetch PCS season results for likely contenders
+        // regardless of race type (one-day or stage race), but keep it bounded to avoid a network storm.
+        $shouldFetch = (
+            ($topCompetitorRank !== null && $topCompetitorRank <= 20)
+            || (($rider->pcs_ranking ?? 9999) <= 50)
+            || (($rider->career_points ?? 0) >= 900)
+        );
 
         if (!$shouldFetch) {
             return $this->pcsSeasonSignalsCache[$cacheKey] = $default;
@@ -2820,7 +2919,7 @@ class PredictionService
             'team_career_points_share' => 0.0,
         ];
 
-        $team = trim((string) ($rider->team ?? ''));
+        $team = trim((string) ($rider->team?->name ?? ''));
         if ($team === '') {
             return $default;
         }
@@ -2829,7 +2928,7 @@ class PredictionService
 
         if (!array_key_exists($cacheKey, $this->raceTeamSignalsCache)) {
             $entries = $race->entries()
-                ->with(['rider:id,team,career_points'])
+                ->with(['rider:id,team_id,career_points', 'rider.team:id,name'])
                 ->get();
 
             $teamBuckets = [];
@@ -2838,7 +2937,7 @@ class PredictionService
                     continue;
                 }
 
-                $entryTeam = trim((string) ($entry->rider->team ?? ''));
+                $entryTeam = trim((string) ($entry->rider->team?->name ?? ''));
                 if ($entryTeam === '') {
                     continue;
                 }
