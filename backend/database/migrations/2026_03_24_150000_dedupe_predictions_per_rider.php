@@ -8,6 +8,12 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            // Migration was only needed to dedupe + re-create the table in SQLite.
+            // Other DBs can rely on proper unique indexes.
+            return;
+        }
+
         DB::statement('PRAGMA foreign_keys = OFF');
 
         DB::statement(<<<'SQL'
@@ -71,6 +77,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            return;
+        }
+
         DB::statement('PRAGMA foreign_keys = OFF');
 
         DB::statement(<<<'SQL'

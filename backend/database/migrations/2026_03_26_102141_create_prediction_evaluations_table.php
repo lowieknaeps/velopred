@@ -25,7 +25,8 @@ return new class extends Migration
             $table->timestamp('evaluated_at');
             $table->timestamps();
 
-            $table->unique(['race_id', 'prediction_type', 'stage_number']);
+            // MySQL has a 64 char identifier limit; Laravel's default generated name is too long here.
+            $table->unique(['race_id', 'prediction_type', 'stage_number'], 'pred_eval_race_type_stage_uq');
         });
     }
 

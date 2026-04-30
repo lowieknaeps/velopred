@@ -13,6 +13,12 @@ return new class extends Migration
             $table->json('stages_json')->nullable()->after('parcours_type');
         });
 
+        if (DB::getDriverName() !== 'sqlite') {
+            // SQLite table rewrite below is only required because older SQLite schemas
+            // couldn't ALTER TABLE in-place for adding columns/constraints.
+            return;
+        }
+
         DB::statement('PRAGMA foreign_keys = OFF');
 
         DB::statement(<<<'SQL'
@@ -77,6 +83,13 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (DB::getDriverName() !== 'sqlite') {
+            Schema::table('races', function (Blueprint $table) {
+                $table->dropColumn('stages_json');
+            });
+            return;
+        }
+
         DB::statement('PRAGMA foreign_keys = OFF');
 
         DB::statement(<<<'SQL'
