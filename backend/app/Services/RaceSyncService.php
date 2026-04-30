@@ -86,7 +86,14 @@ class RaceSyncService
      */
     public function syncStartlistOnly(Race $race): void
     {
-        $race = $this->refreshRaceMeta($race);
+        // PCS can temporarily block the race meta page (403/503). Startlist scraping might still work,
+        // and predictions should not completely fail if meta refresh is unavailable.
+        try {
+            $race = $this->refreshRaceMeta($race);
+        } catch (\Throwable $e) {
+            Log::warning("[RaceSync] Meta refresh skipped for {$race->pcs_slug}: {$e->getMessage()}");
+        }
+
         $this->syncStartlist($race);
     }
 
@@ -102,7 +109,36 @@ class RaceSyncService
         $data = $this->api->getStageResult($race->pcs_slug, $race->year, $pcsStageNumber);
         $this->replaceResults($race, 'stage', $displayStageNumber);
         $this->saveResults($race, $data['results'], 'stage', $displayStageNumber);
+        $this->upsertStageMetaFromStageEndpoint($race, $displayStageNumber, $data);
         Log::info("[RaceSync] Single stage saved: {$race->pcs_slug} {$race->year} display={$displayStageNumber} pcs={$pcsStageNumber}");
+    }
+
+    private function upsertStageMetaFromStageEndpoint(Race $race, int $displayStageNumber, array $stageData): void
+    {
+        $stages = is_array($race->stages_json) ? $race->stages_json : [];
+        $existingIndex = null;
+
+        foreach ($stages as $idx => $stage) {
+            if ((int) ($stage['number'] ?? 0) === $displayStageNumber) {
+                $existingIndex = $idx;
+                break;
+            }
+        }
+
+        $payload = [
+            'number' => $displayStageNumber,
+            'parcours_type' => $stageData['parcours_type'] ?? null,
+            'stage_subtype' => $stageData['stage_subtype'] ?? null,
+            'date' => $stageData['date'] ?? null,
+        ];
+
+        if ($existingIndex === null) {
+            $stages[] = $payload;
+        } else {
+            $stages[$existingIndex] = array_merge($stages[$existingIndex] ?? [], array_filter($payload, fn ($v) => $v !== null));
+        }
+
+        $race->forceFill(['stages_json' => array_values($stages)])->save();
     }
 
     private function syncStartlist(Race $race): void
