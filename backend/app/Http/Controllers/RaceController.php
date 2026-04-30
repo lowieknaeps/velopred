@@ -820,8 +820,19 @@ class RaceController extends Controller
             return ['prediction_type' => 'result', 'stage_number' => 0];
         }
 
-        // Stage races: prefer a context that actually has results, otherwise the UI looks "empty"
-        // even though stage results might already be available.
+        // Stage races:
+        // While the race is ongoing, users expect the default view to be the latest available stage.
+        // Once finished, default back to GC if available.
+        $latestStage = $race->results()
+            ->where('result_type', 'stage')
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->max('stage_number');
+
+        if ($latestStage && $race->isLive()) {
+            return ['prediction_type' => 'stage', 'stage_number' => (int) $latestStage];
+        }
+
         $hasGc = $race->results()
             ->where('result_type', 'gc')
             ->whereNotNull('position')
@@ -831,11 +842,6 @@ class RaceController extends Controller
             return ['prediction_type' => 'gc', 'stage_number' => 0];
         }
 
-        $latestStage = $race->results()
-            ->where('result_type', 'stage')
-            ->whereNotNull('position')
-            ->where('status', 'finished')
-            ->max('stage_number');
         if ($latestStage) {
             return ['prediction_type' => 'stage', 'stage_number' => (int) $latestStage];
         }

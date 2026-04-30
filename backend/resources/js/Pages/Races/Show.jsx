@@ -272,7 +272,7 @@ export default function RacesShow({
                         <div className="mb-6 flex items-center justify-between gap-4">
                             <div>
                                 <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-                                    {has_results ? 'Modelvoorspelling tegenover uitslag' : race.primaryPredictionTitle}
+                                    {race.primaryPredictionTitle}
                                 </div>
                                 <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">
                                     Top 10 favorieten
