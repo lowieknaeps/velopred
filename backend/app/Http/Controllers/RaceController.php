@@ -861,10 +861,25 @@ class RaceController extends Controller
         };
     }
 
-    private function predictionContextSort(string $predictionType, int $stageNumber = 0): int
+    private function predictionContextSort(string $predictionType, int $stageNumber = 0, ?Race $race = null): int
     {
-        return match($predictionType) {
-            // Stage races: show stage contexts first in natural order, then classifications.
+        $isGrandTour = $race && in_array($race->pcs_slug, ['tour-de-france', 'giro-d-italia', 'vuelta-a-espana'], true);
+
+        // For Grand Tours it's more usable to show GC first, even while stages are ongoing.
+        if ($isGrandTour) {
+            return match ($predictionType) {
+                'gc'     => 0,
+                'stage'  => 100 + $stageNumber,
+                'points' => 300,
+                'kom'    => 400,
+                'youth'  => 500,
+                'result' => 600,
+                default  => 700,
+            };
+        }
+
+        // Default: stages first, then classifications.
+        return match ($predictionType) {
             'stage'  => 10 + $stageNumber,
             'result' => 50,
             'gc'     => 200,
@@ -886,7 +901,8 @@ class RaceController extends Controller
             ->groupBy(fn($prediction) => $prediction->prediction_type . ':' . (int) $prediction->stage_number)
             ->sortBy(fn($group) => $this->predictionContextSort(
                 $group->first()->prediction_type,
-                (int) $group->first()->stage_number
+                (int) $group->first()->stage_number,
+                $race
             ))
             ->map(function ($group) use ($primaryContext, $actualByContext) {
                 $first = $group->first();
