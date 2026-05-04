@@ -129,10 +129,11 @@ class RaceController extends Controller
         $latestPrediction = $predictions
             ->sortByDesc(fn ($prediction) => optional($prediction->updated_at)->timestamp ?? 0)
             ->first();
-        $actualByRider = $actualResults->keyBy('rider_id');
+        // Key by rider slug to avoid missing matches when rider IDs differ due to slug aliases/duplicates.
+        $actualByRiderSlug = $actualResults->keyBy(fn ($r) => (string) $r->rider->pcs_slug);
 
-        $predictionList = $primaryPredictions->map(function ($p) use ($actualByRider) {
-            $actual = $actualByRider->get($p->rider_id);
+        $predictionList = $primaryPredictions->map(function ($p) use ($actualByRiderSlug) {
+            $actual = $actualByRiderSlug->get($p->rider->pcs_slug);
 
             return [
                 'position'          => $p->predicted_position,
@@ -150,6 +151,7 @@ class RaceController extends Controller
         $allActualResults = $race->results()
             ->whereNotNull('position')
             ->where('status', 'finished')
+            ->with('rider:id,pcs_slug')
             ->get(['rider_id', 'result_type', 'stage_number', 'position']);
         $predictionGroups = $this->formatPredictionGroups($race, $predictions, $primaryContext, $allActualResults);
 
@@ -893,9 +895,15 @@ class RaceController extends Controller
     private function formatPredictionGroups(Race $race, $predictions, array $primaryContext, $actualResults): array
     {
         $stages = is_array($race->stages_json) ? $race->stages_json : [];
+        // Key by rider slug (not rider_id) so results still match even if duplicate rider records exist
+        // (e.g. PCS slug aliases, DB migrations, partial syncs).
         $actualByContext = collect($actualResults)
             ->groupBy(fn ($r) => (string) $r->result_type . ':' . (int) ($r->stage_number ?? 0))
-            ->map(fn ($group) => $group->keyBy('rider_id'));
+            ->map(function ($group) {
+                return $group
+                    ->filter(fn ($row) => $row->rider?->pcs_slug)
+                    ->keyBy(fn ($row) => (string) $row->rider->pcs_slug);
+            });
 
         return $predictions
             ->groupBy(fn($prediction) => $prediction->prediction_type . ':' . (int) $prediction->stage_number)
@@ -926,7 +934,7 @@ class RaceController extends Controller
                             'win_probability'   => round($prediction->win_probability * 100, 1),
                             'top10_probability' => round($prediction->top10_probability * 100, 1),
                             'confidence'        => round($prediction->confidence_score * 100, 0),
-                            'actual_position'   => $actualForCtx->get($prediction->rider_id)?->position,
+                            'actual_position'   => $actualForCtx->get($prediction->rider->pcs_slug)?->position,
                         ])
                         ->values()
                         ->toArray(),
