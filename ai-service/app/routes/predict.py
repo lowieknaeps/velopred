@@ -8,6 +8,8 @@ GET  /predict/status                 → is het model al getraind?
 
 import os
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Any
 
 from app.models.predictor import predictor, MODEL_VERSION
 from app.schemas.prediction_schema import PredictRequest, PredictResponse, RiderPrediction
@@ -42,6 +44,29 @@ def train():
 
     try:
         stats = predictor.train(db_path)
+        return {"status": "ok", **stats}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Trainingsfout: {e}")
+
+
+class TrainExamplesRequest(BaseModel):
+    examples: list[dict[str, Any]]
+
+
+@router.post("/train-examples")
+def train_examples(request: TrainExamplesRequest):
+    """
+    Train the model from feature/label examples pushed by Laravel (MySQL-backed).
+    Expects flat rows containing at least:
+      - actual_position (or position)
+      - parcours_type
+      - race_year
+      - category_weight (optional, defaults to 1.0)
+    """
+    try:
+        stats = predictor.train_from_examples(request.examples)
         return {"status": "ok", **stats}
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

@@ -120,6 +120,17 @@ class ExternalCyclingApiService
         return $response->json();
     }
 
+    public function trainFromExamples(array $examples): array
+    {
+        $response = Http::timeout(600)->post($this->baseUrl . '/predict/train-examples', [
+            'examples' => $examples,
+        ]);
+        if (!$response->successful()) {
+            throw new RuntimeException("Trainingsfout: " . $response->body());
+        }
+        return $response->json();
+    }
+
     public function predictRace(
         string $slug,
         int $year,

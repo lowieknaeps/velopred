@@ -1115,6 +1115,110 @@ class VelopredPredictor:
             "samples":       len(df_all),
         }
 
+    def train_from_examples(self, examples: list[dict]) -> dict:
+        """
+        Train from flat rows pushed by Laravel (training_examples table).
+        Each row should contain feature columns plus labels.
+        """
+        if not examples:
+            raise ValueError("No examples provided")
+
+        print("📊 Trainingsdata (examples) laden...")
+        df_all = pd.DataFrame(examples)
+
+        if "position" not in df_all.columns:
+            if "actual_position" in df_all.columns:
+                df_all["position"] = df_all["actual_position"]
+            else:
+                raise ValueError("Missing label column: position/actual_position")
+
+        df_all = df_all[pd.notna(df_all["position"])].copy()
+        print(f"   {len(df_all)} samples totaal")
+
+        if len(df_all) < 100:
+            raise ValueError(f"Te weinig data ({len(df_all)} samples).")
+
+        if "parcours_type" not in df_all.columns:
+            df_all["parcours_type"] = "default"
+        if "race_year" not in df_all.columns:
+            df_all["race_year"] = int(pd.Timestamp.utcnow().year)
+        if "category_weight" not in df_all.columns:
+            df_all["category_weight"] = 1.0
+
+        stats = {}
+        latest_year = int(df_all["race_year"].max())
+
+        for group in set(PARCOURS_GROUPS.values()):
+            parcours_in_group = [p for p, g in PARCOURS_GROUPS.items() if g == group]
+            df = df_all[df_all["parcours_type"].isin(parcours_in_group)].copy()
+
+            if len(df) < 30:
+                print(f"   ⚠️  {group}: te weinig data ({len(df)}), skip")
+                continue
+
+            feature_cols = GROUP_FEATURES.get(group, BASE_FEATURE_COLS)
+            for col in feature_cols:
+                if col not in df.columns:
+                    df[col] = np.nan
+
+            X = df[feature_cols].copy()
+            y = df["position"]
+            sample_weights = df.apply(
+                lambda row: self._training_sample_weight(
+                    int(row.get("race_year", latest_year)),
+                    latest_year,
+                    float(row.get("category_weight", 1.0) or 1.0),
+                ),
+                axis=1,
+            )
+
+            medians = {}
+            for col in feature_cols:
+                median_value = X[col].median()
+                medians[col] = float(median_value) if pd.notna(median_value) else DEFAULT_FEATURE_VALUES.get(col, 0.0)
+            X = X.fillna(medians).fillna({col: DEFAULT_FEATURE_VALUES.get(col, 0.0) for col in feature_cols})
+
+            joblib.dump(feature_cols, os.path.join(_MODEL_DIR, f"features_{group}.joblib"))
+
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+
+            def build_model():
+                return GradientBoostingRegressor(
+                    n_estimators=300,
+                    learning_rate=0.04,
+                    max_depth=4,
+                    subsample=0.85,
+                    min_samples_leaf=4,
+                    random_state=42,
+                )
+
+            mae = self._weighted_cv_mae(build_model, X_scaled, y, sample_weights, use_scaled=True)
+            model = build_model()
+            model.fit(X_scaled, y, sample_weight=sample_weights)
+
+            self._models[group] = model
+            self._scalers[group] = scaler
+            self._medians[group] = medians
+            self._feature_cols[group] = feature_cols
+
+            joblib.dump(model, _model_path(group))
+            joblib.dump(scaler, _scaler_path(group))
+            joblib.dump(medians, _medians_path(group))
+
+            stats[group] = {"samples": len(df), "mae_cv": round(mae, 2)}
+            print(f"   ✅ {group}: {len(df)} samples, MAE = {mae:.2f}")
+
+        self._loaded = True
+
+        return {
+            "model_version": MODEL_VERSION,
+            "groups": stats,
+            "total_samples": len(df_all),
+            "mae_cv": round(np.mean([s["mae_cv"] for s in stats.values()]), 2) if stats else None,
+            "samples": len(df_all),
+        }
+
     # ── Voorspellen ───────────────────────────────────────────────────────────
 
     def predict(self, riders: list[dict], parcours_type: str = "default", prediction_type: str = "result", stage_number: int = 0) -> list[dict]:
