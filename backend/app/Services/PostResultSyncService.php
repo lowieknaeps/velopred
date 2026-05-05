@@ -10,18 +10,16 @@ class PostResultSyncService
     public function __construct(
         private PredictionEvaluationService $evaluationService,
         private UpcomingOneDayPredictionRefreshService $predictionRefreshService,
+        private TrainingDatasetService $trainingDataset,
     ) {}
 
     public function handle(Race $race, bool $refreshUpcomingPredictions = true): array
     {
         $race->refresh();
 
-        if (!$race->isOneDay()) {
-            return [
-                'evaluated' => false,
-                'refreshed_upcoming_predictions' => 0,
-            ];
-        }
+        // Persist training examples whenever we have both predictions and results for a context.
+        // This is useful for both one-day races and stage races.
+        $savedExamples = $this->trainingDataset->persistAllAvailableContexts($race);
 
         $hasFinalResults = $race->results()
             ->where('result_type', 'result')
@@ -30,10 +28,11 @@ class PostResultSyncService
             ->where('status', 'finished')
             ->exists();
 
-        if (!$hasFinalResults) {
+        if (!$race->isOneDay() || !$hasFinalResults) {
             return [
                 'evaluated' => false,
                 'refreshed_upcoming_predictions' => 0,
+                'saved_training_examples' => $savedExamples,
             ];
         }
 
@@ -51,6 +50,7 @@ class PostResultSyncService
         return [
             'evaluated' => $evaluation !== null,
             'refreshed_upcoming_predictions' => $refreshed,
+            'saved_training_examples' => $savedExamples,
         ];
     }
 }
