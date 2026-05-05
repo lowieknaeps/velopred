@@ -16,6 +16,7 @@ class PredictRacesCommand extends Command
     protected $signature = 'predict:races {year : Season year}
                             {--only-missing : Skip contexts that already have predictions for the current model version}
                             {--train : Train het model eerst opnieuw voor het voorspelt}
+                            {--all-year : Include all races of the year (also past races), not just the last ~2 weeks}
                             {--max= : Max number of races to predict}
                             {--continue-on-error : Keep going when a race fails}';
 
@@ -25,6 +26,7 @@ class PredictRacesCommand extends Command
     {
         $year = (int) $this->argument('year');
         $onlyMissing = (bool) $this->option('only-missing');
+        $allYear = (bool) $this->option('all-year');
         $max = $this->option('max') !== null ? (int) $this->option('max') : null;
         $continueOnError = (bool) $this->option('continue-on-error');
 
@@ -54,8 +56,9 @@ class PredictRacesCommand extends Command
 
         $query = Race::relevant()
             ->where('year', $year)
-            // include last few days, plus future races
-            ->where('start_date', '>=', now()->subDays(14)->toDateString())
+            // Default: include last ~2 weeks + future, so we don't spam PCS unnecessarily.
+            // For training/backfills you often want historical races too: use --all-year.
+            ->when(!$allYear, fn ($q) => $q->where('start_date', '>=', now()->subDays(14)->toDateString()))
             ->orderBy('start_date')
             ->orderBy('pcs_slug');
 
@@ -176,4 +179,3 @@ class PredictRacesCommand extends Command
             ->values();
     }
 }
-
