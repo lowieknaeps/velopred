@@ -9,3 +9,6 @@ __pycache__/
 # Laravel runtime
 backend/storage/framework/views/
 backend/storage/logs/
+
+# Project docs
+docs/
