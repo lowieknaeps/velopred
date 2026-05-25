@@ -33,6 +33,7 @@ class PredictionService
     private array $pcsSeasonSignalsCache = [];
     private array $topCompetitorCache = [];
     private array $raceTeamSignalsCache = [];
+    private array $stageWithdrawalCutoffCache = [];
 
     private function hydrateRiderForPrediction(Rider $rider): void
     {
@@ -1188,6 +1189,13 @@ class PredictionService
     private function isEligibleForPredictionContext(Rider $rider, Race $race, array $context): bool
     {
         $predictionType = $context['prediction_type'] ?? 'result';
+        $stageNumber = (int) ($context['stage_number'] ?? 0);
+
+        if ($predictionType === 'stage' && $stageNumber > 0) {
+            if ($this->isWithdrawnBeforeStage($race, (int) $rider->id, $stageNumber)) {
+                return false;
+            }
+        }
 
         if ($predictionType !== 'youth') {
             return true;
@@ -1202,6 +1210,33 @@ class PredictionService
         }
 
         return $ageAtRaceStart === null || $ageAtRaceStart < 26;
+    }
+
+    private function isWithdrawnBeforeStage(Race $race, int $riderId, int $targetStageNumber): bool
+    {
+        $cacheKey = (string) $race->id;
+
+        if (!array_key_exists($cacheKey, $this->stageWithdrawalCutoffCache)) {
+            $cutoffByRider = RaceResult::query()
+                ->where('race_id', $race->id)
+                ->where('result_type', 'stage')
+                ->whereNotNull('stage_number')
+                ->whereIn('status', ['dnf', 'dns', 'dsq', 'dnq'])
+                ->select('rider_id', DB::raw('MIN(stage_number) as first_exit_stage'))
+                ->groupBy('rider_id')
+                ->pluck('first_exit_stage', 'rider_id')
+                ->map(fn ($value) => (int) $value)
+                ->all();
+
+            $this->stageWithdrawalCutoffCache[$cacheKey] = $cutoffByRider;
+        }
+
+        $firstExitStage = $this->stageWithdrawalCutoffCache[$cacheKey][$riderId] ?? null;
+        if ($firstExitStage === null) {
+            return false;
+        }
+
+        return $firstExitStage < $targetStageNumber;
     }
 
     private function historyResultTypes(
