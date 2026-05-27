@@ -35,7 +35,7 @@ export default function PredictionTable({ predictions = [], entries = null, show
                         <th className="hidden pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 sm:table-cell">Ploeg</th>
                         <th className="pb-3 text-right text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Winkans</th>
                         <th className="hidden pb-3 text-right text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 md:table-cell">Top-10</th>
-                        <th className="hidden pb-3 text-right text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 lg:table-cell">Betrouwbaarheid</th>
+                        <th className="hidden whitespace-nowrap pb-3 text-right text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 lg:table-cell">Betrouwbaarheid</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">

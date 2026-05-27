@@ -132,10 +132,10 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                         <span className="vp-pill">Koersdata, voorspellingen en context op 1 plek</span>
 
                         <div className="space-y-5">
-                            <h1 className="font-display text-5xl font-semibold tracking-tight text-slate-950 sm:text-6xl lg:text-7xl">
+                            <h1 className="font-display text-5xl font-semibold tracking-tight text-slate-100 sm:text-6xl lg:text-7xl">
                                 Zie de koers kantelen nog voor de finale openbreekt.
                             </h1>
-                            <p className="max-w-2xl text-lg leading-8 text-slate-600 sm:text-xl">
+                            <p className="max-w-2xl text-lg leading-8 text-slate-300 sm:text-xl">
                                 Velopred bundelt koersdata en rennerprofielen tot een platform dat voorspelt én toont waarom favorieten stijgen of dalen. Startlijsten en resultaten worden automatisch bijgewerkt, zodat je snel ziet wat er verandert.
                             </p>
                         </div>
@@ -265,7 +265,7 @@ export default function Dashboard({ liveBoard = null, evaluationSummary = null, 
                         {features.map((feature) => (
                             <article
                                 key={feature.title}
-                                className={`vp-panel bg-gradient-to-br ${feature.accent} p-6`}
+                                className={`rounded-3xl border border-slate-200/70 bg-gradient-to-br ${feature.accent} p-6 text-slate-900`}
                             >
                                 <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Onderdeel</div>
                                 <h3 className="mt-4 font-display text-2xl font-semibold tracking-tight text-slate-950">

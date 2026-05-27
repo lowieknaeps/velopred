@@ -15,8 +15,8 @@ export default {
     theme: {
         extend: {
             fontFamily: {
-                sans: ['Inter', ...defaultTheme.fontFamily.sans],
-                display: ['Inter', ...defaultTheme.fontFamily.sans],
+                sans: ['Source Sans 3', 'Segoe UI', ...defaultTheme.fontFamily.sans],
+                display: ['Source Serif 4', ...defaultTheme.fontFamily.serif],
             },
         },
     },

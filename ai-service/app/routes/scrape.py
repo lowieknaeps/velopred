@@ -99,7 +99,7 @@ def _fallback_parse_one_day_results(html: str) -> list[dict]:
             if len(cells) < 2:
                 continue
 
-            rider_link = row.css_first('a[href^="rider/"]')
+            rider_link = row.css_first('a[href*="rider/"]')
             if rider_link is None:
                 continue
 
@@ -108,7 +108,7 @@ def _fallback_parse_one_day_results(html: str) -> list[dict]:
             if not rider_slug or rider_slug == "rider" or "-" not in rider_slug:
                 continue
 
-            team_link = row.css_first('a[href^="team/"]')
+            team_link = row.css_first('a[href*="team/"]')
             rank_text = cells[0].text(strip=True) if cells else ""
             rank_value = _parse_int(rank_text)
             status = _parse_status(rank_text)
@@ -128,6 +128,51 @@ def _fallback_parse_one_day_results(html: str) -> list[dict]:
                 "pcs_points": None,
                 "uci_points": None,
             })
+
+    return parsed
+
+
+def _fallback_parse_stage_results(html: str) -> list[dict]:
+    """Parse stage results directly from HTML when stage_scraper crashes."""
+    tree = HTMLParser(html)
+    table = tree.css_first("table.basic")
+    if table is None:
+        return []
+
+    parsed: list[dict] = []
+    for row in table.css("tbody tr"):
+        cells = row.css("td")
+        if len(cells) < 2:
+            continue
+
+        rider_link = row.css_first('a[href*="rider/"]')
+        if rider_link is None:
+            continue
+
+        rider_slug = slug_from_url(rider_link.attributes.get("href", ""))
+        if not rider_slug or rider_slug == "rider" or "-" not in rider_slug:
+            continue
+
+        team_link = row.css_first('a[href*="team/"]')
+        rank_text = cells[0].text(strip=True) if cells else ""
+        position = _parse_int(rank_text)
+        status = _parse_status(rank_text)
+        if position is None and status == "finished":
+            continue
+
+        parsed.append({
+            "rider_slug": rider_slug,
+            "rider_name": rider_link.text(strip=True),
+            "team_slug": slug_from_url(team_link.attributes.get("href", "")) if team_link else None,
+            "team_name": team_link.text(strip=True) if team_link else None,
+            "nationality": None,
+            "position": position,
+            "status": status,
+            "time_seconds": None,
+            "gap_seconds": None,
+            "pcs_points": None,
+            "uci_points": None,
+        })
 
     return parsed
 
@@ -275,6 +320,10 @@ def scrape_stage(slug: str, year: int, stage_nr: int):
         html = fetch(path)
         s = Stage(path, html=html, update_html=False)
         stage_name = _stage_name(s)
+        try:
+            stage_results = _format_results(s.results(), "stage")
+        except Exception:
+            stage_results = _fallback_parse_stage_results(html)
 
         return {
             "race_slug": slug,
@@ -285,7 +334,7 @@ def scrape_stage(slug: str, year: int, stage_nr: int):
             "distance": s.distance(),
             "parcours_type": parcours_from_profile(s.profile_icon()),
             "stage_subtype": stage_subtype_from_profile(s.profile_icon(), stage_name),
-            "results": _format_results(s.results(), "stage"),
+            "results": stage_results,
             "gc": _format_results(s.gc(), "gc"),
         }
     except (ValueError, ExpectedParsingError) as e:
@@ -531,6 +580,8 @@ def _parse_status(value) -> str:
 def _parse_int(value: str | None) -> int | None:
     if value is None:
         return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    return int(digits) if digits else None
 
 
 def _parse_pcs_stage_number(stage_url: str | None, stage_name: str | None) -> int | None:
@@ -554,6 +605,3 @@ def _parse_pcs_stage_number(stage_url: str | None, stage_name: str | None) -> in
         return 0
 
     return None
-
-    digits = "".join(ch for ch in value if ch.isdigit())
-    return int(digits) if digits else None

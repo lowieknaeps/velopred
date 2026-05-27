@@ -1,29 +1,77 @@
 """
 Centrale cloudscraper wrapper voor PCS.
 Regelt rate limiting zodat we niet geblokkeerd worden.
+Fallback: HTML-cache van de pcs-scraper Kotlin tool (gemount op /pcs-cache).
 """
 
+import os
 import time
 import re
 import cloudscraper
 from requests.exceptions import ConnectionError, Timeout, RequestException
 
+# Optionele HTTP(S) proxy via env var, bv. "http://user:pass@host:port"
+_PROXY = os.environ.get("SCRAPER_PROXY", "").strip() or None
+_proxies = {"http": _PROXY, "https": _PROXY} if _PROXY else None
+
+# Pad naar de gemounte Kotlin pcs-scraper HTML cache
+_KOTLIN_CACHE_DIR = os.environ.get("PCS_CACHE_DIR", "/pcs-cache")
+
 _scraper = cloudscraper.create_scraper()
 _last_request_at: float = 0
 MIN_DELAY = 1.2  # seconden tussen requests
-
-# Cloudflare blocks direct HTML requests for some pages. As a fallback we can
-# fetch through r.jina.ai, which returns the HTML text via a proxy.
-JINA_PREFIX = "https://r.jina.ai/http://www.procyclingstats.com/"
 MAX_RETRIES = 3
+
+
+def _get(url: str, timeout: int = 20) -> object:
+    kwargs = {"timeout": timeout}
+    if _proxies:
+        kwargs["proxies"] = _proxies
+    return _scraper.get(url, **kwargs)
+
+
+def _kotlin_cache_path(path: str) -> str | None:
+    """
+    Zet een PCS pad om naar het Kotlin cache bestandspad.
+    bv. "race/giro-d-italia/2026"         → "_race/_giro-d-italia/2026.html"
+        "race/giro-d-italia/2026/stage-14" → "_race/_giro-d-italia/_2026/stage-14.html"
+        "race/amstel-gold-race/2026/result"→ "_race/_amstel-gold-race/_2026/result.html"
+    """
+    parts = path.strip("/").split("/")
+    if len(parts) < 2:
+        return None
+    parent = "/".join(f"_{p}" for p in parts[:-1])
+    filename = f"{parts[-1]}.html"
+    return os.path.join(_KOTLIN_CACHE_DIR, parent, filename)
+
+
+def _read_kotlin_cache(path: str) -> str | None:
+    """
+    Leest de gecachede HTML uit de Kotlin pcs-scraper cache.
+    Normaliseert ook id="resultsCont" → class="resultCont" zodat
+    de procyclingstats library de resultaten-tabel kan vinden.
+    """
+    candidates = [_kotlin_cache_path(path)]
+    # Fallback: sommige pagina's staan in een subdirectory (bv. startlist → _startlist/startlist.html)
+    parts = path.strip("/").split("/")
+    if len(parts) >= 2:
+        parent = "/".join(f"_{p}" for p in parts[:-1])
+        last = parts[-1]
+        candidates.append(os.path.join(_KOTLIN_CACHE_DIR, parent, f"_{last}", f"{last}.html"))
+
+    for cache_file in candidates:
+        if cache_file and os.path.isfile(cache_file):
+            with open(cache_file, encoding="utf-8", errors="replace") as f:
+                html = f.read()
+            # procyclingstats zoekt op .resultCont (class), PCS gebruikt id="resultsCont"
+            return html.replace('id="resultsCont"', 'class="resultCont"')
+    return None
 
 
 def fetch(path: str) -> str:
     """
     Haalt een PCS-pagina op als HTML string.
-    Respecteert automatisch de minimum delay tussen requests.
-
-    :param path: relatief PCS pad, bv. "race/tour-de-france/2024"
+    Volgorde: 1) live PCS  2) Kotlin HTML cache (als PCS 403 geeft)
     """
     global _last_request_at
 
@@ -36,42 +84,29 @@ def fetch(path: str) -> str:
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = _scraper.get(url, timeout=20)
+            response = _get(url)
             _last_request_at = time.time()
 
-            # If Cloudflare blocks us (403), retry via jina.ai proxy.
             if response.status_code == 403:
-                proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
-                response = _scraper.get(proxy_url, timeout=20)
-                _last_request_at = time.time()
-                # r.jina.ai can return 451 for some rider pages; fall back to direct PCS.
-                if response.status_code == 451:
-                    response = _scraper.get(url, timeout=20)
-                    _last_request_at = time.time()
+                cached = _read_kotlin_cache(path)
+                if cached:
+                    return cached
+                raise RuntimeError(f"PCS fetch blocked for {path}: 403, geen cache beschikbaar")
 
             response.raise_for_status()
             return response.text
+        except RuntimeError:
+            raise
         except (ConnectionError, Timeout, RequestException) as e:
             last_exc = e
-            # Backoff to avoid hammering PCS when it closes connections.
             time.sleep(0.8 * attempt)
             continue
 
-    # If repeated issues: last resort try jina.ai once (and never crash the whole service with an uncaught HTTPError).
-    if last_exc is not None:
-        try:
-            proxy_url = f"{JINA_PREFIX}{path.lstrip('/')}"
-            response = _scraper.get(proxy_url, timeout=25)
-            _last_request_at = time.time()
-            if response.status_code == 451:
-                response = _scraper.get(url, timeout=25)
-                _last_request_at = time.time()
-            response.raise_for_status()
-            return response.text
-        except (ConnectionError, Timeout, RequestException) as e:
-            raise RuntimeError(f"PCS fetch failed for {path}: {e}") from e
-
-    raise RuntimeError("fetch failed unexpectedly")
+    # Laatste poging: Kotlin cache
+    cached = _read_kotlin_cache(path)
+    if cached:
+        return cached
+    raise RuntimeError(f"PCS fetch failed for {path}: {last_exc}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

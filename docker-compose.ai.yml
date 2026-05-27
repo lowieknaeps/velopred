@@ -6,3 +6,10 @@ services:
     ports:
       - "8002:8001"
     restart: unless-stopped
+    environment:
+      # Optionele HTTP(S) proxy voor PCS scraping, bv. "http://user:pass@host:port"
+      SCRAPER_PROXY: ""
+      # Pad binnen de container naar de gemounte Kotlin pcs-scraper HTML cache
+      PCS_CACHE_DIR: "/pcs-cache"
+    volumes:
+      - "C:/Users/lowie/pcs-scraper/cache:/pcs-cache:ro"

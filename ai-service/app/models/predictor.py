@@ -222,7 +222,6 @@ SPECIALIST_FEATURE_COLS = [
     "uci_ranking",
     "age",
     "n_results",
-    # ── Nieuwe features v12 ──────────────────────────────────────────────────
     "form_collapse_score",
     "parcours_breakthrough_ratio",
     "reliable_poor_form",

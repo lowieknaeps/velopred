@@ -113,7 +113,7 @@ class RaceController extends Controller
         $hasStartlist      = $startlistRiderIds->isNotEmpty();
 
         $predictions = $race->predictions()
-            ->when($hasStartlist, fn($q) => $q->whereIn('rider_id', $startlistRiderIds))
+            ->when($hasStartlist && !$race->hasFinished(), fn($q) => $q->whereIn('rider_id', $startlistRiderIds))
             ->orderBy('prediction_type')
             ->orderBy('stage_number')
             ->orderBy('predicted_position')
@@ -740,7 +740,7 @@ class RaceController extends Controller
         return [
             'slug'           => $race->pcs_slug,
             'name'           => $race->name,
-            'category'       => $race->category ?? ucfirst(str_replace('_', ' ', $race->race_type)),
+            'category'       => $this->translateCategoryLabel($race->category ?? ucfirst(str_replace('_', ' ', $race->race_type))),
             'tier'           => $this->raceTier($race->category),
             'date'           => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
             'summary'        => $this->parcoursDescription($race->parcours_type),
@@ -809,6 +809,21 @@ class RaceController extends Controller
             'mixed' => 'Gemengd',
             default => ucfirst((string) $type),
         };
+    }
+
+    private function translateCategoryLabel(?string $category): string
+    {
+        $value = trim((string) $category);
+        if ($value === '') {
+            return 'Mannen elite';
+        }
+
+        $normalized = strtolower($value);
+        if (str_contains($normalized, 'men elite') || str_contains($normalized, 'male elite')) {
+            return 'Mannen elite';
+        }
+
+        return $value;
     }
 
     private function formatTimestamp($value): ?string

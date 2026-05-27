@@ -1,4 +1,4 @@
-@import url('https://fonts.bunny.net/css?family=inter:400,500,600,700&display=swap');
+@import url('https://fonts.bunny.net/css?family=source-sans-3:400,500,600,700&family=source-serif-4:500,600,700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,11 +6,10 @@
 
 @layer base {
     body {
-        @apply bg-slate-50 text-slate-900 antialiased;
-        font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+        @apply bg-slate-950 text-slate-100 antialiased;
+        font-family: 'Source Sans 3', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
     }
 
-    /* Verwijder native browser styling van form elementen */
     select {
         -webkit-appearance: none;
         -moz-appearance: none;
@@ -26,39 +25,199 @@
 }
 
 @layer components {
-
-    /* Shell — achtergrond van de volledige pagina */
     .vp-shell {
-        @apply bg-slate-50;
+        @apply bg-slate-950;
         background-image:
-            radial-gradient(ellipse at top, rgba(15, 118, 110, 0.06), transparent 60%),
-            radial-gradient(ellipse at bottom right, rgba(232, 109, 31, 0.06), transparent 60%);
+            radial-gradient(ellipse at top, rgba(59, 130, 246, 0.20), transparent 62%),
+            radial-gradient(ellipse at bottom right, rgba(249, 115, 22, 0.20), transparent 58%);
     }
 
-    /* Paneel — witte kaart met zachte schaduw en border */
     .vp-panel {
-        @apply rounded-3xl border border-slate-200/80 bg-white;
-        box-shadow: 0 2px 20px -6px rgba(15, 23, 42, 0.10);
+        @apply rounded-3xl border border-slate-800/90 bg-slate-900/[0.88] text-slate-100;
+        box-shadow: 0 18px 48px -24px rgba(2, 6, 23, 0.9);
     }
 
-    /* Donker paneel — voor footer */
     .vp-panel-dark {
-        @apply relative rounded-3xl border border-white/10 bg-slate-950 text-white;
+        @apply relative rounded-3xl border border-indigo-300/20 bg-slate-950 text-white;
         box-shadow: 0 8px 48px -16px rgba(15, 23, 42, 0.6);
     }
 
-    /* Primaire knop */
     .vp-button-primary {
-        @apply inline-flex items-center justify-center rounded-full bg-slate-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800;
+        @apply inline-flex items-center justify-center rounded-xl border border-sky-300/30 bg-sky-500/20 px-4 py-2.5 text-sm font-semibold text-sky-100 transition hover:bg-sky-500/30;
     }
 
-    /* Secundaire knop */
     .vp-button-secondary {
-        @apply inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50;
+        @apply inline-flex items-center justify-center rounded-xl border border-slate-400/30 bg-slate-700/30 px-4 py-2.5 text-sm font-semibold text-slate-100 transition hover:border-slate-300/40 hover:bg-slate-700/45;
     }
 
-    /* Pill / badge */
     .vp-pill {
-        @apply inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold tracking-wide;
+        @apply inline-flex items-center rounded-lg border px-3 py-1 text-xs font-semibold tracking-wide;
+    }
+
+    .vp-panel h1,
+    .vp-panel h2,
+    .vp-panel h3,
+    .vp-panel h4,
+    .vp-panel .font-display {
+        @apply text-orange-200;
+    }
+
+    .vp-panel-dark h1,
+    .vp-panel-dark h2,
+    .vp-panel-dark h3,
+    .vp-panel-dark h4,
+    .vp-panel-dark .font-display {
+        @apply text-orange-100;
+    }
+
+    .vp-panel a {
+        @apply text-indigo-300;
+    }
+
+    .vp-panel a:hover {
+        @apply text-orange-300;
+    }
+
+    .vp-panel code {
+        @apply bg-slate-800 text-orange-200;
+    }
+
+    .vp-panel .text-slate-950,
+    .vp-panel .text-slate-900,
+    .vp-panel .text-slate-800,
+    .vp-panel .text-slate-700,
+    .vp-panel .text-black,
+    .vp-panel .text-gray-950,
+    .vp-panel .text-gray-900,
+    .vp-panel .text-gray-800,
+    .vp-panel .text-gray-700,
+    .vp-panel .text-zinc-950,
+    .vp-panel .text-zinc-900,
+    .vp-panel .text-zinc-800,
+    .vp-panel .text-zinc-700,
+    .vp-panel .text-neutral-950,
+    .vp-panel .text-neutral-900,
+    .vp-panel .text-neutral-800,
+    .vp-panel .text-neutral-700,
+    .vp-panel-dark .text-slate-950,
+    .vp-panel-dark .text-slate-900,
+    .vp-panel-dark .text-slate-800,
+    .vp-panel-dark .text-slate-700,
+    .vp-panel-dark .text-black,
+    .vp-panel-dark .text-gray-950,
+    .vp-panel-dark .text-gray-900,
+    .vp-panel-dark .text-gray-800,
+    .vp-panel-dark .text-gray-700,
+    .vp-panel-dark .text-zinc-950,
+    .vp-panel-dark .text-zinc-900,
+    .vp-panel-dark .text-zinc-800,
+    .vp-panel-dark .text-zinc-700,
+    .vp-panel-dark .text-neutral-950,
+    .vp-panel-dark .text-neutral-900,
+    .vp-panel-dark .text-neutral-800,
+    .vp-panel-dark .text-neutral-700 {
+        @apply text-slate-100;
+    }
+
+    .vp-panel .text-slate-600,
+    .vp-panel .text-slate-500,
+    .vp-panel .text-slate-400,
+    .vp-panel .text-gray-800,
+    .vp-panel .text-gray-700,
+    .vp-panel .text-gray-600,
+    .vp-panel .text-gray-500,
+    .vp-panel .text-gray-400,
+    .vp-panel .text-zinc-800,
+    .vp-panel .text-zinc-700,
+    .vp-panel .text-zinc-600,
+    .vp-panel .text-zinc-500,
+    .vp-panel .text-zinc-400,
+    .vp-panel .text-neutral-800,
+    .vp-panel .text-neutral-700,
+    .vp-panel .text-neutral-600,
+    .vp-panel .text-neutral-500,
+    .vp-panel .text-neutral-400,
+    .vp-panel-dark .text-slate-600,
+    .vp-panel-dark .text-slate-500,
+    .vp-panel-dark .text-slate-400,
+    .vp-panel-dark .text-gray-600,
+    .vp-panel-dark .text-gray-500,
+    .vp-panel-dark .text-gray-400,
+    .vp-panel-dark .text-zinc-600,
+    .vp-panel-dark .text-zinc-500,
+    .vp-panel-dark .text-zinc-400,
+    .vp-panel-dark .text-neutral-600,
+    .vp-panel-dark .text-neutral-500,
+    .vp-panel-dark .text-neutral-400 {
+        @apply text-slate-300;
+    }
+
+    .vp-panel .bg-white,
+    .vp-panel .bg-slate-50,
+    .vp-panel .bg-slate-100 {
+        @apply bg-slate-800/70;
+    }
+
+    .vp-panel .border-slate-100,
+    .vp-panel .border-slate-200 {
+        @apply border-slate-700/70;
+    }
+
+    .vp-accent-pill {
+        @apply border border-indigo-400/30 bg-indigo-500/20 text-indigo-200;
+    }
+
+    .vp-warm-pill {
+        @apply border border-orange-300/30 bg-orange-400/20 text-orange-100;
+    }
+
+    .vp-predictions-theme .text-slate-950,
+    .vp-predictions-theme .text-slate-900,
+    .vp-predictions-theme .text-slate-800,
+    .vp-predictions-theme .text-slate-700 {
+        color: rgb(241 245 249);
+    }
+
+    .vp-predictions-theme .text-slate-600,
+    .vp-predictions-theme .text-slate-500,
+    .vp-predictions-theme .text-slate-400 {
+        color: rgb(203 213 225);
+    }
+
+    .vp-predictions-theme th.text-slate-400 {
+        color: rgb(245 158 11);
+    }
+
+    .vp-predictions-theme .bg-white .text-slate-950,
+    .vp-predictions-theme .bg-white .text-slate-900,
+    .vp-predictions-theme .bg-white .text-slate-800,
+    .vp-predictions-theme .bg-white .text-slate-700,
+    .vp-predictions-theme .bg-slate-50 .text-slate-950,
+    .vp-predictions-theme .bg-slate-50 .text-slate-900,
+    .vp-predictions-theme .bg-slate-50 .text-slate-800,
+    .vp-predictions-theme .bg-slate-50 .text-slate-700,
+    .vp-predictions-theme .bg-slate-100 .text-slate-950,
+    .vp-predictions-theme .bg-slate-100 .text-slate-900,
+    .vp-predictions-theme .bg-slate-100 .text-slate-800,
+    .vp-predictions-theme .bg-slate-100 .text-slate-700,
+    .vp-predictions-theme .bg-red-50 .text-slate-950,
+    .vp-predictions-theme .bg-red-50 .text-slate-900,
+    .vp-predictions-theme .bg-green-50 .text-slate-950,
+    .vp-predictions-theme .bg-green-50 .text-slate-900,
+    .vp-predictions-theme .bg-indigo-50 .text-slate-950,
+    .vp-predictions-theme .bg-indigo-50 .text-slate-900 {
+        color: rgb(15 23 42);
+    }
+
+    .vp-predictions-theme .bg-white .text-slate-600,
+    .vp-predictions-theme .bg-white .text-slate-500,
+    .vp-predictions-theme .bg-white .text-slate-400,
+    .vp-predictions-theme .bg-slate-50 .text-slate-600,
+    .vp-predictions-theme .bg-slate-50 .text-slate-500,
+    .vp-predictions-theme .bg-slate-50 .text-slate-400,
+    .vp-predictions-theme .bg-slate-100 .text-slate-600,
+    .vp-predictions-theme .bg-slate-100 .text-slate-500,
+    .vp-predictions-theme .bg-slate-100 .text-slate-400 {
+        color: rgb(71 85 105);
     }
 }

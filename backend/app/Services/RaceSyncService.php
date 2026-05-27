@@ -194,6 +194,10 @@ class RaceSyncService
     {
         try {
             $data = $this->api->getOneDayResult($race->pcs_slug, $race->year);
+            if (empty($data['results'] ?? [])) {
+                Log::warning("[RaceSync] Lege eendagsuitslag ontvangen voor {$race->name}; bestaande resultaten blijven behouden.");
+                return;
+            }
             $this->replaceResults($race, 'result');
             $this->saveResults($race, $data['results'], 'result');
             Log::info("[RaceSync] Eendagsuitslag opgeslagen: {$race->name}");
@@ -215,6 +219,10 @@ class RaceSyncService
                 : $displayNr;
             try {
                 $data = $this->api->getStageResult($race->pcs_slug, $race->year, $pcsNr);
+                if (empty($data['results'] ?? [])) {
+                    Log::warning("[RaceSync] Etappe {$displayNr} gaf lege resultaten terug; bestaande etappe-data blijft behouden.");
+                    continue;
+                }
                 $this->replaceResults($race, 'stage', $displayNr);
                 $this->saveResults($race, $data['results'], 'stage', $displayNr);
                 Log::info("[RaceSync] Etappe {$displayNr} opgeslagen (PCS stage {$pcsNr})");
@@ -226,6 +234,10 @@ class RaceSyncService
         // GC eindklassement
         try {
             $data = $this->api->getGcResult($race->pcs_slug, $race->year);
+            if (empty($data['results'] ?? [])) {
+                Log::warning("[RaceSync] Leeg GC voor {$race->name}; bestaande GC blijft behouden.");
+                return;
+            }
             $this->replaceResults($race, 'gc');
             $this->saveResults($race, $data['results'], 'gc');
             Log::info("[RaceSync] GC opgeslagen");
@@ -240,6 +252,10 @@ class RaceSyncService
         ] as $resultType => $method) {
             try {
                 $data = $this->api->{$method}($race->pcs_slug, $race->year);
+                if (empty($data['results'] ?? [])) {
+                    Log::warning("[RaceSync] Leeg {$resultType} voor {$race->name}; bestaande {$resultType} blijft behouden.");
+                    continue;
+                }
                 $this->replaceResults($race, $resultType);
                 $this->saveResults($race, $data['results'], $resultType);
                 Log::info("[RaceSync] {$resultType} opgeslagen");

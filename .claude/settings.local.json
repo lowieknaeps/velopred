@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -o \"BatchMode=yes\" -o \"ConnectTimeout=5\" -N -L 3307:176.62.168.235:3306 lowieknaepsnxtmediatecheu@ssh085.webhosting.be)",
+      "PowerShell(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\lowie\\\\velopred\\\\backend\\\\scripts\\\\windows\\\\start-backend.ps1\")",
+      "PowerShell(Start-Sleep -Seconds 3; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8080\" -TimeoutSec 5 -UseBasicParsing; \"HTTP $\\($r.StatusCode\\)\" } catch { \"Error: $_\" })",
+      "PowerShell(Start-Sleep -Seconds 5; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8080\" -TimeoutSec 8 -UseBasicParsing; \"HTTP $\\($r.StatusCode\\)\" } catch { \"Error: $_\" })",
+      "Bash(php artisan *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8080)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(cd C:\\\\Users\\\\lowie\\\\velopred\\\\backend; Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"cd 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php artisan serve --host=127.0.0.1 --port=8080\")",
+      "PowerShell(Start-Sleep -Seconds 5; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8080\" -TimeoutSec 8 -UseBasicParsing; \"HTTP $\\($r.StatusCode\\)\" } catch { \"Error: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Receive-Job *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Start-Sleep -Seconds 3; try { Invoke-WebRequest -Uri \"http://127.0.0.1:9999\" -TimeoutSec 3 -UseBasicParsing | Select-Object StatusCode } catch { \"not up: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(netsh int *)",
+      "PowerShell(netstat *)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8086\" -TimeoutSec 15 -UseBasicParsing; \"HTTP $\\($r.StatusCode\\) - $\\($r.Content.Substring\\(0, [Math]::Min\\(200, $r.Content.Length\\)\\)\\)\" } catch { \"Error: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8086\" -TimeoutSec 20 -UseBasicParsing; \"HTTP $\\($r.StatusCode\\) - lengte: $\\($r.Content.Length\\) bytes\" } catch { \"Error: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host 'Laravel server op http://127.0.0.1:8080'; cd 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php -S 127.0.0.1:8080 -t public vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php\")",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host 'Laravel scheduler'; cd 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php artisan schedule:work\")",
+      "PowerShell(Start-Sleep -Seconds 4; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8080\" -TimeoutSec 15 -UseBasicParsing; \"HTTP $\\($r.StatusCode\\)\" } catch { \"Error: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host 'Laravel server op http://127.0.0.1:8080'; cd 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php -S 127.0.0.1:8080 vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php\")",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host 'Laravel server op http://127.0.0.1:8080'; Set-Location 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend\\\\public'; php -S 127.0.0.1:8080 ..\\\\vendor\\\\laravel\\\\framework\\\\src\\\\Illuminate\\\\Foundation\\\\resources\\\\server.php\")",
+      "PowerShell(Invoke-WebRequest -Uri \"http://127.0.0.1:8002/predict/status\" -UseBasicParsing | Select-Object -ExpandProperty Content)",
+      "PowerShell(Invoke-WebRequest -Uri \"http://127.0.0.1:8002/scrape/calendar/2026\" -UseBasicParsing 2>&1 | Select-Object StatusCode, Content)",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host '=== Auto-sync resultaten ===' -ForegroundColor Cyan; Set-Location 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php run_autosync.php; Write-Host 'Gereed.' -ForegroundColor Green\")",
+      "PowerShell(Start-Sleep -Seconds 3; Invoke-WebRequest -Uri \"http://127.0.0.1:8002/predict/status\" -UseBasicParsing | Select-Object -ExpandProperty Content)",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host '=== Auto-sync ===' -ForegroundColor Cyan; Set-Location 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php run_autosync.php; Write-Host 'Gereed.' -ForegroundColor Green\")",
+      "PowerShell(Start-Sleep -Seconds 10; docker ps; Invoke-WebRequest -Uri \"http://127.0.0.1:8002/predict/status\" -UseBasicParsing | Select-Object -ExpandProperty Content)",
+      "PowerShell(Start-Process -FilePath \"powershell.exe\" -ArgumentList \"-NoExit\", \"-Command\", \"Write-Host '=== Auto-sync ===' -ForegroundColor Cyan; Set-Location 'C:\\\\Users\\\\lowie\\\\velopred\\\\backend'; php run_autosync.php\")",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\lowie\\\\pcs-scraper\" -Depth 1 | Where-Object { $_.Name -ne \".git\" } | Select-Object Name, Mode)",
+      "PowerShell(Start-Sleep -Seconds 3; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8002/scrape/race/giro-d-italia/2026\" -UseBasicParsing -TimeoutSec 30; \"HTTP $\\($r.StatusCode\\) - $\\($r.Content.Substring\\(0,120\\)\\)...\" } catch { \"FOUT: $\\($_.Exception.Message\\)\" })",
+      "Bash(python3 *)",
+      "Bash(python -c ' *)",
+      "Bash(docker exec velopred-velopred-ai-1 *)",
+      "PowerShell(Start-Sleep -Seconds 3; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8002/scrape/race/giro-d-italia/2026/stage/1\" -UseBasicParsing -TimeoutSec 20; $data = $r.Content | ConvertFrom-Json; \"HTTP $\\($r.StatusCode\\) - Resultaten: $\\($data.results.Count\\), 1e: $\\($data.results[0].rider_name\\)\" } catch { \"FOUT: $_\" })",
+      "Bash(Get-ChildItem -Path . -Directory)",
+      "Bash(Select-Object Name)"
+    ]
+  }
+}

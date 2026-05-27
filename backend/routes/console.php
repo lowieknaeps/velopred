@@ -25,6 +25,13 @@ Schedule::call(fn () => app()->call([app(AutoSyncFinishedRacesJob::class), 'hand
     ->name('auto-sync-imminent-startlists')
     ->withoutOverlapping();
 
+// Elk uur: scraper + import van recente PCS resultaten (etappes + eendagskoersen)
+// zodat live scraping blocks minder impact hebben op de data in de app.
+Schedule::command('sync:pcs-results', [date('Y'), '--skip-cache' => true])
+    ->cron('10 6,14,22 * * *')
+    ->name('sync-pcs-results')
+    ->withoutOverlapping();
+
 // Elke dag om 06:00: kalender bijwerken voor dit jaar
 Schedule::command('sync:calendar', [date('Y')])
     ->dailyAt('06:00')

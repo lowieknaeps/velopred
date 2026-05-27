@@ -103,6 +103,13 @@ function TerrainIcon({ terrain }) {
 }
 
 export default function RaceList({ races = [] }) {
+    const toDisplayName = (value) =>
+        String(value ?? '')
+            .trim()
+            .split(/\s+/)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+            .join(' ');
+
     return (
         <div className="grid gap-5 lg:grid-cols-3">
             {races.map((race) => (
@@ -201,8 +208,14 @@ export default function RaceList({ races = [] }) {
                                 <div className="text-xs uppercase tracking-[0.22em] text-slate-400">
                                     {race.topPickLabel ?? 'Topfavoriet'}
                                 </div>
-                                <div className="mt-1 break-words text-base font-semibold text-slate-900">
-                                    {race.topPick}
+                                <div
+                                    className={`mt-1 break-words text-base font-semibold ${
+                                        String(race.topPickLabel ?? '').toLowerCase().includes('model')
+                                            ? 'text-amber-500'
+                                            : 'text-slate-900'
+                                    }`}
+                                >
+                                    {toDisplayName(race.topPick)}
                                 </div>
                             </div>
                             <Link

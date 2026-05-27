@@ -21,8 +21,6 @@ Route::get('/riders', [RiderController::class, 'index']);
 Route::get('/riders/{rider}', [RiderController::class, 'show']);
 
 Route::get('/predictions', [PredictionController::class, 'index']);
-Route::get('/over-mij', fn () => Inertia::render('About'))->name('about');
-
 // Dashboard (Breeze)
 Route::get('/dashboard', function () {
     return view('dashboard');

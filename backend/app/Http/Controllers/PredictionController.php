@@ -97,7 +97,7 @@ class PredictionController extends Controller
             ->where('status', 'finished')
             ->orderBy('position')
             ->limit(10)
-            ->with('rider')
+            ->with('rider.team')
             ->get();
 
         // ── Bouw predictions payload ─────────────────────────────────────────
@@ -120,6 +120,14 @@ class PredictionController extends Controller
         })->values()->toArray();
 
         $predictionGroups = $this->formatPredictionGroups($predictions, $primaryContext);
+        $officialResults = $actualResults->map(function ($result) {
+            return [
+                'position' => (int) $result->position,
+                'rider_slug' => $result->rider?->pcs_slug,
+                'rider' => $result->rider?->full_name ?? 'Onbekend',
+                'team' => $result->rider?->team?->name ?? '–',
+            ];
+        })->values()->all();
 
         // ── Scenarios op basis van race en voorspellingen ────────────────────
         $scenarios = $this->buildScenarios($race, $primaryPredictions);
@@ -164,8 +172,8 @@ class PredictionController extends Controller
                 'slug'        => $race->pcs_slug,
                 'name'        => $race->name,
                 'date'        => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
-                'terrain'     => ucfirst($race->parcours_type),
-                'category'    => $race->category,
+                'terrain'     => $this->terrainLabel($race->parcours_type),
+                'category'    => $this->translateCategoryLabel($race->category),
                 'is_finished' => $race->hasFinished(),
                 'is_live'     => $race->isLive(),
                 'has_results' => $actualResults->isNotEmpty(),
@@ -178,6 +186,7 @@ class PredictionController extends Controller
                 'primary_stage_number' => (int) $primaryContext['stage_number'],
             ],
             'predictions' => $predictionList,
+            'officialResults' => $officialResults,
             'predictionGroups' => $predictionGroups,
             'scenarios'   => $scenarios,
             'evaluation'  => $this->formatEvaluationPayload($race, $primaryContext),
@@ -384,9 +393,34 @@ class PredictionController extends Controller
 
     private function primaryPredictionContext(Race $race): array
     {
-        return $race->isOneDay()
-            ? ['prediction_type' => 'result', 'stage_number' => 0]
-            : ['prediction_type' => 'gc', 'stage_number' => 0];
+        if ($race->isOneDay()) {
+            return ['prediction_type' => 'result', 'stage_number' => 0];
+        }
+
+        $latestStage = $race->results()
+            ->where('result_type', 'stage')
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->max('stage_number');
+
+        if ($latestStage && $race->isLive()) {
+            return ['prediction_type' => 'stage', 'stage_number' => (int) $latestStage];
+        }
+
+        $hasGc = $race->results()
+            ->where('result_type', 'gc')
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->exists();
+        if ($hasGc) {
+            return ['prediction_type' => 'gc', 'stage_number' => 0];
+        }
+
+        if ($latestStage) {
+            return ['prediction_type' => 'stage', 'stage_number' => (int) $latestStage];
+        }
+
+        return ['prediction_type' => 'gc', 'stage_number' => 0];
     }
 
     private function predictionContextLabel(string $predictionType, int $stageNumber = 0): string
@@ -455,5 +489,34 @@ class PredictionController extends Controller
     private function formatTimestamp($value): ?string
     {
         return $value?->copy()->timezone('Europe/Brussels')->locale('nl_BE')->translatedFormat('d M H:i');
+    }
+
+    private function translateCategoryLabel(?string $category): string
+    {
+        $value = trim((string) $category);
+        if ($value === '') {
+            return 'Mannen elite';
+        }
+
+        $normalized = strtolower($value);
+        if (str_contains($normalized, 'men elite') || str_contains($normalized, 'male elite')) {
+            return 'Mannen elite';
+        }
+
+        return $value;
+    }
+
+    private function terrainLabel(?string $type): string
+    {
+        return match ($type) {
+            'flat' => 'Vlak',
+            'hilly' => 'Heuvels',
+            'mountain' => 'Bergen',
+            'cobbled' => 'Kasseien',
+            'classic' => 'Klassieker',
+            'tt' => 'Tijdrit',
+            'mixed' => 'Gemengd',
+            default => ucfirst((string) $type),
+        };
     }
 }

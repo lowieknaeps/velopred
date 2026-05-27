@@ -9,6 +9,7 @@ export default function PredictionsIndex({
     race = null,
     evaluation = null,
     predictions = [],
+    officialResults = [],
     predictionGroups = [],
     scenarios = [],
     availableRaces = [],
@@ -18,6 +19,7 @@ export default function PredictionsIndex({
     const [isSwitchingRace, setIsSwitchingRace] = useState(false);
 
     const hasPredictions = predictions.length > 0;
+    const hasOfficialResults = officialResults.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
     const selectedRaceSlug = availableRaces.find((option) => option.is_selected)?.slug ?? '';
 
@@ -36,6 +38,17 @@ export default function PredictionsIndex({
             }))
             .filter((group) => (group.predictions ?? []).length > 0);
     }, [normalizedQuery, extraGroups]);
+
+    function getGroupTitle(group) {
+        const rawTitle = (group?.title ?? '').trim();
+        const stageFromKey = Number(group?.key?.split(':')?.[1] ?? 0);
+        const hasStage = Number.isFinite(stageFromKey) && stageFromKey > 0;
+
+        if (!rawTitle) return hasStage ? `Etappe #${stageFromKey}` : 'Etappevoorspelling';
+        if (!rawTitle.includes('#')) return rawTitle;
+
+        return hasStage ? rawTitle.replace('#', `#${stageFromKey}`) : rawTitle.replace('#', '').trim();
+    }
 
     function handleRaceChange(event) {
         const nextRace = event.target.value;
@@ -56,7 +69,7 @@ export default function PredictionsIndex({
         <AppLayout>
             <Head title="Voorspellingen" />
 
-            <div className="space-y-10">
+            <div className="vp-predictions-theme space-y-10">
                 <SectionHeading
                     eyebrow="Voorspellingsdesk"
                     title="Uitlegbare voorspellingen met duidelijke koerslogica."
@@ -75,7 +88,7 @@ export default function PredictionsIndex({
                             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
                                 {race.date}
                             </span>
-                            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-teal-700">
+                            <span className="vp-accent-pill rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em]">
                                 {race.terrain}
                             </span>
                             {race.is_live && (
@@ -94,8 +107,8 @@ export default function PredictionsIndex({
                                 </span>
                             )}
                             {race.prediction_model_version && (
-                                <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-indigo-700">
-                                    {race.prediction_model_version}
+                                <span className="vp-accent-pill rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em]">
+                                    Model {race.prediction_model_version}
                                 </span>
                             )}
                         </div>
@@ -159,16 +172,16 @@ export default function PredictionsIndex({
                                     className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 sm:w-72"
                                 />
                                 <div className="flex flex-wrap gap-2">
-                                    <a href="#top10" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200">
+                                    <a href="#top10" className="vp-accent-pill rounded-full px-3 py-1 text-xs font-semibold">
                                         Top 10
                                     </a>
                                     {extraGroups.length > 0 && (
-                                        <a href="#extra" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200">
+                                        <a href="#extra" className="vp-accent-pill rounded-full px-3 py-1 text-xs font-semibold">
                                             Ritten/klassementen
                                         </a>
                                     )}
                                     {scenarios.length > 0 && (
-                                        <a href="#scenarios" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-200">
+                                        <a href="#scenarios" className="vp-accent-pill rounded-full px-3 py-1 text-xs font-semibold">
                                             Scenario&apos;s
                                         </a>
                                     )}
@@ -201,7 +214,7 @@ export default function PredictionsIndex({
                                             Top 10 favorieten
                                         </h3>
                                     </div>
-                                    <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+                                    <span className="vp-warm-pill rounded-full px-3 py-1 text-xs font-semibold">
                                         Model live doorgerekend bij elke update
                                     </span>
                                 </div>
@@ -222,6 +235,52 @@ export default function PredictionsIndex({
                             </section>
                         )}
 
+                        {hasOfficialResults && (
+                            <section className="vp-panel p-6">
+                                <div className="mb-6">
+                                    <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
+                                        Officiele uitslag
+                                    </div>
+                                    <h3 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">
+                                        Top 10 resultaat
+                                    </h3>
+                                </div>
+
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="border-b border-slate-100">
+                                                <th className="w-10 pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">#</th>
+                                                <th className="pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Renner</th>
+                                                <th className="hidden pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 sm:table-cell">Ploeg</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-50">
+                                            {officialResults.map((row) => (
+                                                <tr key={`${row.position}-${row.rider_slug ?? row.rider}`} className="transition-colors hover:bg-slate-50">
+                                                    <td className="py-3 pr-3">
+                                                        <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-700">
+                                                            {row.position}
+                                                        </span>
+                                                    </td>
+                                                    <td className="py-3 font-medium text-slate-900">
+                                                        {row.rider_slug ? (
+                                                            <Link href={`/riders/${row.rider_slug}`} className="hover:text-indigo-700 hover:underline">
+                                                                {row.rider}
+                                                            </Link>
+                                                        ) : (
+                                                            row.rider
+                                                        )}
+                                                    </td>
+                                                    <td className="hidden py-3 text-slate-500 sm:table-cell">{row.team}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        )}
+
                         {evaluation && (
                             <PredictionEvaluationPanel evaluation={evaluation} />
                         )}
@@ -235,7 +294,7 @@ export default function PredictionsIndex({
                                             <div className="mb-4 flex items-center justify-between gap-3">
                                                 <div>
                                                     <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Voorspellingscontext</div>
-                                                    <h4 className="mt-2 font-display text-xl font-semibold tracking-tight text-slate-950">{group.title}</h4>
+                                                    <h4 className="mt-2 font-display text-xl font-semibold tracking-tight text-slate-950">{getGroupTitle(group)}</h4>
                                                 </div>
                                                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                                                     Top 10
