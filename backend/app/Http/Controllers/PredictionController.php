@@ -7,6 +7,7 @@ use App\Models\Prediction;
 use App\Models\Race;
 use App\Services\PredictionService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -25,7 +26,7 @@ class PredictionController extends Controller
         $selectedRaceSlug = trim((string) $request->query('race', ''));
 
         $availableRacesQuery = Race::relevant()
-            ->where('year', $currentYear)
+            ->whereIn('year', [$currentYear, $currentYear - 1])
             ->whereHas('predictions');
 
         $availableRaces = (clone $availableRacesQuery)
@@ -35,8 +36,10 @@ class PredictionController extends Controller
         $selectedRace = null;
 
         if ($selectedRaceSlug !== '') {
-            $selectedRace = (clone $availableRacesQuery)
+            $selectedRace = Race::relevant()
                 ->where('pcs_slug', $selectedRaceSlug)
+                ->whereHas('predictions')
+                ->orderBy('year', 'desc')
                 ->first();
         }
 
@@ -65,24 +68,38 @@ class PredictionController extends Controller
             ]);
         }
 
-        $primaryContext = $this->primaryPredictionContext($race);
+        $payloadCacheKey = "predictions:index:" . md5(json_encode([
+            'race' => $race->id,
+            'selected_slug' => $selectedRaceSlug,
+            'year' => $currentYear,
+            'today' => $today,
+            'pred_max' => optional($race->predictions()->max('updated_at'))?->timestamp ?? 0,
+            'res_max' => optional($race->results()->max('updated_at'))?->timestamp ?? 0,
+            'eval_max' => optional($race->predictionEvaluations()->max('evaluated_at'))?->timestamp ?? 0,
+            'startlist_synced_at' => optional($race->startlist_synced_at)?->timestamp ?? 0,
+        ]));
 
-        // ── Top 10 voorspellingen — alleen renners die effectief starten ─────
-        $startlistRiderIds = $race->entries()->pluck('rider_id');
-        $hasStartlist      = $startlistRiderIds->isNotEmpty();
+        $payload = Cache::remember($payloadCacheKey, now()->addSeconds(90), function () use ($race, $today, $currentYear, $availableRaces) {
+            $primaryContext = $this->primaryPredictionContext($race);
 
-        $predictions = $race->predictions()
-            ->when($hasStartlist, fn($q) => $q->whereIn('rider_id', $startlistRiderIds))
-            ->orderBy('prediction_type')
-            ->orderBy('stage_number')
-            ->orderBy('predicted_position')
-            ->with('rider.team')
-            ->get();
+            // ── Top 10 voorspellingen — alleen renners die effectief starten ─────
+            $startlistRiderIds = $race->entries()->pluck('rider_id');
+            $hasStartlist      = $startlistRiderIds->isNotEmpty();
 
-        $primaryPredictions = $predictions
+            $predictions = $race->predictions()
+                ->when($hasStartlist, fn($q) => $q->whereIn('rider_id', $startlistRiderIds))
+                ->orderBy('prediction_type')
+                ->orderBy('stage_number')
+                ->orderBy('predicted_position')
+                ->with('rider.team')
+                ->get();
+
+        $primaryPredictions = $this->normalizeTopPredictions(
+            $predictions
             ->filter(fn($prediction) => $prediction->prediction_type === $primaryContext['prediction_type']
                 && (int) $prediction->stage_number === (int) $primaryContext['stage_number'])
             ->sortBy('predicted_position')
+        )
             ->take(10)
             ->values();
         $latestPrediction = $predictions
@@ -104,10 +121,10 @@ class PredictionController extends Controller
         // Map actuele uitslag op rider_id voor vergelijking
         $actualByRider = $actualResults->keyBy('rider_id');
 
-        $predictionList = $primaryPredictions->map(function ($p) use ($actualByRider) {
+        $predictionList = $primaryPredictions->values()->map(function ($p, $index) use ($actualByRider) {
             $actual = $actualByRider->get($p->rider_id);
             return [
-                'position'          => $p->predicted_position,
+                'position'          => $index + 1,
                 'rider_slug'        => $p->rider->pcs_slug,
                 'rider'             => $p->rider->full_name,
                 'team'              => $p->rider->team?->name ?? '–',
@@ -119,7 +136,13 @@ class PredictionController extends Controller
             ];
         })->values()->toArray();
 
-        $predictionGroups = $this->formatPredictionGroups($predictions, $primaryContext);
+        $allActualResults = $race->results()
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->with('rider:id,pcs_slug')
+            ->get(['rider_id', 'result_type', 'stage_number', 'position']);
+
+            $predictionGroups = $this->formatPredictionGroups($race, $predictions, $primaryContext, $allActualResults);
         $officialResults = $actualResults->map(function ($result) {
             return [
                 'position' => (int) $result->position,
@@ -130,12 +153,12 @@ class PredictionController extends Controller
         })->values()->all();
 
         // ── Scenarios op basis van race en voorspellingen ────────────────────
-        $scenarios = $this->buildScenarios($race, $primaryPredictions);
+            $scenarios = $this->buildScenarios($race, $primaryPredictions);
 
         // ── Andere races met voorspellingen (sidebar) ─────────────────────────
         // Toon standaard de laatst afgelopen koersen (niet hardcoded).
         $otherRacesBase = Race::relevant()
-            ->where('year', $currentYear)
+            ->whereIn('year', [$currentYear, $currentYear - 1])
             ->where('id', '!=', $race->id)
             ->whereHas('predictions');
 
@@ -167,7 +190,7 @@ class PredictionController extends Controller
                 'upcoming' => $r->start_date->gte(now()),
             ]);
 
-        return Inertia::render('Predictions/Index', [
+            return [
             'race' => [
                 'slug'        => $race->pcs_slug,
                 'name'        => $race->name,
@@ -201,7 +224,10 @@ class PredictionController extends Controller
                 ])
                 ->values(),
             'otherRaces'  => $otherRaces,
-        ]);
+            ];
+        });
+
+        return Inertia::render('Predictions/Index', $payload);
     }
 
     // ── Scenarios ─────────────────────────────────────────────────────────────
@@ -448,34 +474,48 @@ class PredictionController extends Controller
         };
     }
 
-    private function formatPredictionGroups($predictions, array $primaryContext): array
+    private function formatPredictionGroups(Race $race, $predictions, array $primaryContext, $actualResults): array
     {
+        $actualByContext = collect($actualResults)
+            ->groupBy(fn ($r) => (string) $r->result_type . ':' . (int) ($r->stage_number ?? 0))
+            ->map(function ($group) {
+                return $group
+                    ->filter(fn ($row) => $row->rider?->pcs_slug)
+                    ->keyBy(fn ($row) => (string) $row->rider->pcs_slug);
+            });
+
         return $predictions
             ->groupBy(fn($prediction) => $prediction->prediction_type . ':' . (int) $prediction->stage_number)
             ->sortBy(fn($group) => $this->predictionContextSort(
                 $group->first()->prediction_type,
                 (int) $group->first()->stage_number
             ))
-            ->map(function ($group) use ($primaryContext) {
+            ->map(function ($group) use ($race, $primaryContext, $actualByContext) {
                 $first = $group->first();
+                $ctxKey = $first->prediction_type . ':' . (int) $first->stage_number;
+                $actualForCtx = $actualByContext->get($ctxKey, collect());
+                $topPredictions = $this->normalizeTopPredictions($group)->take(10)->values();
 
                 return [
                     'key'        => $first->prediction_type . ':' . (int) $first->stage_number,
                     'title'      => $this->predictionContextLabel($first->prediction_type, (int) $first->stage_number),
                     'is_primary' => $first->prediction_type === $primaryContext['prediction_type']
                         && (int) $first->stage_number === (int) $primaryContext['stage_number'],
-                    'predictions' => $group
-                        ->sortBy('predicted_position')
-                        ->take(10)
-                        ->map(function ($prediction) {
+                    'evaluation' => $this->formatEvaluationPayload($race, [
+                        'prediction_type' => $first->prediction_type,
+                        'stage_number' => (int) $first->stage_number,
+                    ]),
+                    'predictions' => $topPredictions
+                        ->map(function ($prediction, $index) use ($actualForCtx) {
                             return [
-                                'position'          => $prediction->predicted_position,
+                                'position'          => $index + 1,
                                 'rider_slug'        => $prediction->rider->pcs_slug,
                                 'rider'             => $prediction->rider->full_name,
-                                'team'              => $prediction->rider->team?->name ?? '–',
+                                'team'              => $prediction->rider->team?->name ?? '-',
                                 'win_probability'   => round($prediction->win_probability * 100, 1),
                                 'top10_probability' => round($prediction->top10_probability * 100, 1),
                                 'confidence'        => round($prediction->confidence_score * 100, 0),
+                                'actual_position'   => $actualForCtx->get($prediction->rider->pcs_slug)?->position,
                             ];
                         })
                         ->values()
@@ -484,6 +524,16 @@ class PredictionController extends Controller
             })
             ->values()
             ->all();
+    }
+
+    private function normalizeTopPredictions($predictions)
+    {
+        return collect($predictions)
+            ->sortBy('predicted_position')
+            ->groupBy('rider_id')
+            ->map(fn($rows) => $rows->sortBy('predicted_position')->first())
+            ->sortBy('predicted_position')
+            ->values();
     }
 
     private function formatTimestamp($value): ?string
@@ -520,3 +570,5 @@ class PredictionController extends Controller
         };
     }
 }
+
+

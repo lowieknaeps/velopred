@@ -1,6 +1,8 @@
 import { Head, useForm } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
+import InlineLoadingBadge from '../../Components/InlineLoadingBadge';
 import PredictionEvaluationPanel from '../../Components/PredictionEvaluationPanel';
+import PredictionGenerationScreen from '../../Components/PredictionGenerationScreen';
 import PredictionTable from '../../Components/PredictionTable';
 import AppLayout from '../../Layouts/AppLayout';
 
@@ -22,6 +24,28 @@ export default function RacesShow({
     const previousRerunStatus = useRef('idle');
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
+    const [openGroups, setOpenGroups] = useState(() =>
+        Object.fromEntries(extraGroups.map((group, index) => [group.key, index === 0]))
+    );
+
+    useEffect(() => {
+        setOpenGroups(Object.fromEntries(extraGroups.map((group, index) => [group.key, index === 0])));
+    }, [race.slug, predictionGroups.length]);
+
+    const toggleGroup = (key) => {
+        setOpenGroups((prev) => ({
+            ...prev,
+            [key]: !prev[key],
+        }));
+    };
+    const hasZeroChangeSummary =
+        rerunStatus === 'completed' &&
+        rerunChangeSummary &&
+        Number(rerunChangeSummary.top10_overlap ?? 0) === 10 &&
+        Number(rerunChangeSummary.exact_positions ?? 0) === 10 &&
+        Number(rerunChangeSummary.new_entries ?? 0) === 0 &&
+        Number(rerunChangeSummary.dropped_entries ?? 0) === 0 &&
+        Number(rerunChangeSummary.win_probability_shifts ?? 0) === 0;
 
     const rerunModel = () => {
         setRerunStatus('idle');
@@ -101,6 +125,10 @@ export default function RacesShow({
     return (
         <AppLayout>
             <Head title={race.name} />
+            <PredictionGenerationScreen
+                active={processing || rerunStatus === 'running'}
+                progress={rerunStatus === 'running' ? rerunProgress : null}
+            />
 
             <div className="space-y-8">
                 <section className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
@@ -153,6 +181,7 @@ export default function RacesShow({
                             >
                                 {processing ? 'Model wordt gestart...' : 'Run Model Opnieuw'}
                             </button>
+                            <InlineLoadingBadge active={rerunStatus === 'running'} text="Modeloutput voorbereiden..." />
                             {(showRerunFeedback || rerunStatus === 'running') && (
                                 <div className="w-full max-w-lg space-y-1">
                                     <div className="flex items-center justify-between text-xs">
@@ -166,7 +195,11 @@ export default function RacesShow({
                                             }`}
                                         >
                                             {rerunStatus === 'completed'
-                                                ? 'Herberekening klaar. Wijzigingen hieronder zichtbaar.'
+                                                ? hasZeroChangeSummary
+                                                    ? rerunChangeSummary?.model_version_changed
+                                                        ? 'Herberekening succesvol. Modelversie vernieuwd, maar top-10 output bleef gelijk.'
+                                                        : 'Herberekening succesvol, maar geen nieuwe data sinds vorige run (0 wijzigingen).'
+                                                    : 'Herberekening klaar. Wijzigingen hieronder zichtbaar.'
                                                 : rerunStatus === 'failed'
                                                   ? 'Herberekening duurde te lang. Probeer opnieuw.'
                                                   : 'Model wordt opnieuw berekend...'}
@@ -193,6 +226,14 @@ export default function RacesShow({
                                             <div className="mt-1">
                                                 Nieuwe namen: {rerunChangeSummary.new_entries} · Weggevallen: {rerunChangeSummary.dropped_entries} · Winkans shifts: {rerunChangeSummary.win_probability_shifts}
                                             </div>
+                                            <div className="mt-1">
+                                                Gem. winkans-shift: {rerunChangeSummary.avg_win_shift_pp ?? 0} pp
+                                            </div>
+                                            {(rerunChangeSummary.baseline_model_version || rerunChangeSummary.current_model_version) && (
+                                                <div className="mt-1">
+                                                    Model: {rerunChangeSummary.baseline_model_version ?? '-'} {'->'} {rerunChangeSummary.current_model_version ?? '-'}
+                                                </div>
+                                            )}
                                             {Array.isArray(rerunChangeSummary.movers) && rerunChangeSummary.movers.length > 0 && (
                                                 <div className="mt-1">
                                                     Grootste verschuivingen:{' '}
@@ -209,7 +250,6 @@ export default function RacesShow({
                                 </div>
                             )}
                         </div>
-
                         <div className="mt-8 grid gap-4 sm:grid-cols-3">
                             <div className="rounded-[24px] bg-slate-50 p-4">
                                 <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Terrein</div>
@@ -301,7 +341,11 @@ export default function RacesShow({
                         <div className="grid gap-4 xl:grid-cols-2">
                             {extraGroups.map((group) => (
                                 <article key={group.key} className="vp-panel p-5">
-                                    <div className="mb-4 flex items-center justify-between gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleGroup(group.key)}
+                                        className="mb-4 flex w-full items-center justify-between gap-3 text-left"
+                                    >
                                         <div>
                                             <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Voorspellingscontext</div>
                                             <h3 className="mt-2 font-display text-xl font-semibold tracking-tight text-slate-950">{group.title}</h3>
@@ -312,13 +356,31 @@ export default function RacesShow({
                                         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                                             Top 10
                                         </span>
-                                    </div>
+                                    </button>
 
-                                    <PredictionTable
-                                        predictions={group.predictions}
-                                        showActual={group.predictions?.some((row) => row.actual_position != null)}
-                                        contextLink={{ race: race?.slug, type: group.key?.split(':')?.[0] ?? 'result', stage: Number(group.key?.split(':')?.[1] ?? 0) }}
-                                    />
+                                    {openGroups[group.key] && (
+                                        <>
+                                            <PredictionTable
+                                                predictions={group.predictions}
+                                                showActual={group.predictions?.some((row) => row.actual_position != null)}
+                                                contextLink={{ race: race?.slug, type: group.key?.split(':')?.[0] ?? 'result', stage: Number(group.key?.split(':')?.[1] ?? 0) }}
+                                            />
+
+                                            <div className="mt-5 border-t border-slate-100 pt-5">
+                                                {group.evaluation ? (
+                                                    <PredictionEvaluationPanel
+                                                        evaluation={group.evaluation}
+                                                        collapsible={(group.key ?? '').startsWith('stage:')}
+                                                        defaultExpanded={!(group.key ?? '').startsWith('stage:')}
+                                                    />
+                                                ) : (
+                                                    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-4 text-sm text-slate-400">
+                                                        Nog geen evaluatie beschikbaar voor deze context.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </>
+                                    )}
                                 </article>
                             ))}
                         </div>
@@ -342,3 +404,5 @@ export default function RacesShow({
         </AppLayout>
     );
 }
+
+

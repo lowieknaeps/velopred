@@ -24,7 +24,7 @@ export default function Navbar() {
                         <Link
                             key={item.href}
                             href={item.href}
-                            className="rounded-full px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+                            className="rounded-full px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-slate-800 hover:text-white"
                         >
                             {item.label}
                         </Link>
@@ -39,7 +39,7 @@ export default function Navbar() {
 
                 <button
                     type="button"
-                    className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 md:hidden"
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-slate-200 md:hidden"
                     onClick={() => setOpen((value) => !value)}
                     aria-label="Navigatie openen"
                 >
@@ -53,7 +53,7 @@ export default function Navbar() {
                         <Link
                             key={item.href}
                             href={item.href}
-                            className="block rounded-2xl px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+                            className="block rounded-2xl px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-slate-800"
                             onClick={() => setOpen(false)}
                         >
                             {item.label}

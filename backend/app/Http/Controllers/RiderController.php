@@ -8,6 +8,7 @@ use App\Models\Rider;
 use App\Services\ExternalCyclingApiService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -15,6 +16,8 @@ class RiderController extends Controller
 {
     public function index(): Response
     {
+        $cacheKey = 'riders:index:' . now()->format('YmdH');
+        $payload = Cache::remember($cacheKey, now()->addSeconds(90), function () {
         $today = now()->toDateString();
         $currentYear = (int) date('Y');
 
@@ -87,13 +90,18 @@ class RiderController extends Controller
             ])
             ->get();
 
-        return Inertia::render('Riders/Index', [
+            return [
             'riders' => $riders->map(fn(Rider $rider) => $this->formatRiderCard($rider)),
-        ]);
+            ];
+        });
+
+        return Inertia::render('Riders/Index', $payload);
     }
 
     public function show(Request $request, string $slug): Response
     {
+        $cacheKey = 'riders:show:' . md5($slug . '|' . (string) $request->query('race', '') . '|' . (string) $request->query('type', '') . '|' . (int) $request->query('stage', 0));
+        $payload = Cache::remember($cacheKey, now()->addSeconds(90), function () use ($request, $slug) {
         $rider = Rider::where('pcs_slug', $slug)
             ->with('team')
             ->firstOrFail();
@@ -170,6 +178,18 @@ class RiderController extends Controller
             'parcours' => ucfirst($r->race->parcours_type ?? '–'),
         ])->values()->toArray();
 
+        $recentTrendFallback = null;
+        if ($recentResults->isNotEmpty()) {
+            $recentCount = $recentResults->count();
+            $recentTop10 = $recentResults->filter(fn ($r) => $r->position <= 10)->count();
+            $recentWins = $recentResults->filter(fn ($r) => $r->position === 1)->count();
+            $recentAvg = round((float) $recentResults->avg('position'), 1);
+
+            $recentTrendFallback = $recentWins > 0
+                ? "{$recentWins} overwinning(en) en {$recentTop10} top-10 plaatsen in de laatste {$recentCount} uitslagen"
+                : "{$recentTop10} top-10 plaatsen in de laatste {$recentCount} uitslagen (gem. positie #{$recentAvg})";
+        }
+
         $upcomingTable = $upcomingPredictions->map(fn($prediction) => [
             'race'            => $prediction->race->name,
             'slug'            => $prediction->race->pcs_slug,
@@ -211,13 +231,16 @@ class RiderController extends Controller
             }
         }
 
-        return Inertia::render('Riders/Show', [
+        $riderCard = $this->formatRiderCard($rider);
+
+            return [
             'rider' => [
-                ...$this->formatRiderCard($rider),
+                ...$riderCard,
                 'photo_url'      => $this->fetchPcsPhotoUrl($rider->pcs_slug),
                 'nationality'   => $rider->nationality,
                 'date_of_birth' => $rider->date_of_birth?->locale('nl_BE')->translatedFormat('d M Y'),
                 'age'           => $rider->age,
+                'trend'         => $recentTrendFallback ?? $riderCard['trend'],
                 'outlook'       => $bestUpcomingPrediction
                     ? "{$rider->full_name} staat momenteel als #{$bestUpcomingPrediction->predicted_position} geprojecteerd voor {$bestUpcomingPrediction->race->name} ({$this->predictionContextLabel($bestUpcomingPrediction->prediction_type, (int) $bestUpcomingPrediction->stage_number)}) met " . round($bestUpcomingPrediction->win_probability * 100, 1) . "% winkans."
                     : 'Nog geen komende startlijstgebonden voorspellingen voor deze renner.',
@@ -226,7 +249,10 @@ class RiderController extends Controller
             'recentResults' => $resultsTable,
             'upcomingPredictions' => $upcomingTable,
             'explainability' => $explain,
-        ]);
+            ];
+        });
+
+        return Inertia::render('Riders/Show', $payload);
     }
 
     private function explainSignals(array $features, string $predictionType): array

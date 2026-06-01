@@ -6,6 +6,7 @@ use App\Models\Prediction;
 use App\Models\PredictionEvaluation;
 use App\Models\Race;
 use App\Services\PredictionService;
+use Illuminate\Support\Facades\Cache;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -17,12 +18,19 @@ class HomeController extends Controller
 
     public function index(): Response
     {
-        return Inertia::render('Dashboard', [
-            'liveBoard' => $this->buildLiveBoard(),
-            'evaluationSummary' => $this->buildEvaluationSummary(),
-            'featuredRaces' => $this->buildFeaturedRaces(),
-            'featuredRiders' => $this->buildFeaturedRiders(),
-        ]);
+        $year = (int) date('Y');
+        $payload = Cache::remember("home:dashboard:{$year}", now()->addSeconds(60), function () {
+            $liveBoard = $this->buildLiveBoard();
+
+            return [
+                'liveBoard' => $liveBoard,
+                'evaluationSummary' => $this->buildEvaluationSummary(),
+                'featuredRaces' => $this->buildFeaturedRaces(),
+                'featuredRiders' => $this->buildFeaturedRiders($liveBoard),
+            ];
+        });
+
+        return Inertia::render('Dashboard', $payload);
     }
 
     private function buildFeaturedRaces(): array
@@ -116,9 +124,8 @@ class HomeController extends Controller
             ->all();
     }
 
-    private function buildFeaturedRiders(): array
+    private function buildFeaturedRiders(?array $board): array
     {
-        $board = $this->buildLiveBoard();
         if (!$board || empty($board['entries'])) {
             return [];
         }
@@ -148,26 +155,34 @@ class HomeController extends Controller
 
     private function buildEvaluationSummary(): ?array
     {
+        $latestAny = PredictionEvaluation::query()
+            ->with('race:id,pcs_slug,name,year,start_date,end_date')
+            ->whereHas('race')
+            ->join('races', 'races.id', '=', 'prediction_evaluations.race_id')
+            ->orderByDesc('races.end_date')
+            ->orderByDesc('races.start_date')
+            ->orderByDesc('prediction_evaluations.stage_number')
+            ->orderByDesc('prediction_evaluations.evaluated_at')
+            ->select('prediction_evaluations.*')
+            ->first();
+
         $evaluations = PredictionEvaluation::query()
-            ->where('prediction_type', 'result')
-            ->where('stage_number', 0)
-            ->with('race:id,pcs_slug,name,year,start_date')
+            ->with('race:id,pcs_slug,name,year,start_date,end_date')
             ->orderByDesc('evaluated_at')
             ->limit(5)
             ->get();
 
-        if ($evaluations->isEmpty()) {
+        if ($evaluations->isEmpty() || !$latestAny) {
             return null;
         }
 
-        $latest = $evaluations->first();
         $recent = $evaluations->values();
 
         $avgTop10 = round((float) $recent->avg('top10_hits'), 1);
         $avgExact = round((float) $recent->avg('exact_position_hits'), 1);
         $winnerHitRate = round(((float) $recent->avg(fn (PredictionEvaluation $e) => $e->winner_hit ? 1 : 0)) * 100, 0);
 
-        $latestRace = $latest->race;
+        $latestRace = $latestAny->race;
         $raceDate = $latestRace?->start_date?->locale('nl_BE')->translatedFormat('d M Y');
 
         return [
@@ -178,11 +193,14 @@ class HomeController extends Controller
                     'year' => $latestRace?->year,
                     'date' => $raceDate,
                 ],
-                'top10_hits' => (int) $latest->top10_hits,
-                'exact_hits' => (int) $latest->exact_position_hits,
-                'winner_hit' => (bool) $latest->winner_hit,
-                'mae' => $latest->mean_absolute_position_error !== null ? round((float) $latest->mean_absolute_position_error, 1) : null,
-                'evaluated_at' => $latest->evaluated_at?->timezone('Europe/Brussels')->format('d-m-Y H:i'),
+                'context_label' => $latestAny->stage_number > 0
+                    ? "Etappe {$latestAny->stage_number}"
+                    : strtoupper((string) $latestAny->prediction_type),
+                'top10_hits' => (int) $latestAny->top10_hits,
+                'exact_hits' => (int) $latestAny->exact_position_hits,
+                'winner_hit' => (bool) $latestAny->winner_hit,
+                'mae' => $latestAny->mean_absolute_position_error !== null ? round((float) $latestAny->mean_absolute_position_error, 1) : null,
+                'evaluated_at' => $latestAny->evaluated_at?->timezone('Europe/Brussels')->format('d-m-Y H:i'),
             ],
             'recent' => [
                 'count' => $recent->count(),
@@ -249,6 +267,7 @@ class HomeController extends Controller
             'date' => $race->start_date->locale('nl_BE')->translatedFormat('d M Y'),
             'terrain' => ucfirst($race->parcours_type),
             'category' => $race->category,
+            'model_version' => $topPrediction?->model_version,
             'confidence' => round($predictions->avg('confidence_score') * 100),
             'leadScenarioTitle' => $this->leadScenarioTitle($race->parcours_type),
             'leadScenarioText' => $this->leadScenarioText($race, $topPrediction),

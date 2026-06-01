@@ -1,15 +1,11 @@
 import { Head, Link } from '@inertiajs/react';
+import { Activity, Calendar, Flag, Gauge, TrendingUp, User } from 'lucide-react';
+import EmptyState from '../../Components/EmptyState';
 import AppLayout from '../../Layouts/AppLayout';
 
 function PositionBadge({ pos, status }) {
-    if (status !== 'finished' || pos == null) {
-        return <span className="text-slate-400">DNF</span>;
-    }
-    const base = 'inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold';
-    if (pos === 1)  return <span className={`${base} bg-amber-100 text-amber-800`}>1</span>;
-    if (pos <= 3)   return <span className={`${base} bg-slate-100 text-slate-700`}>{pos}</span>;
-    if (pos <= 10)  return <span className={`${base} bg-teal-50 text-teal-700`}>{pos}</span>;
-    return              <span className="text-sm text-slate-500">{pos}</span>;
+    if (status !== 'finished' || pos == null) return <span className="text-slate-400">DNF</span>;
+    return <span className="rounded-md border border-slate-600 bg-slate-900 px-2 py-0.5 text-xs font-semibold text-slate-200">#{pos}</span>;
 }
 
 export default function RidersShow({ rider, indicators = [], recentResults = [], upcomingPredictions = [], explainability = null }) {
@@ -18,236 +14,108 @@ export default function RidersShow({ rider, indicators = [], recentResults = [],
             <Head title={rider.name} />
 
             <div className="space-y-8">
-
-                {/* Rider header */}
-                <section className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
+                <section className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
                     <div className="vp-panel p-6 sm:p-8">
                         <div className="mb-4">
                             {rider.photo_url ? (
-                                <div className="h-28 w-24 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm">
-                                    <img
-                                        src={rider.photo_url}
-                                        alt={`Profielfoto van ${rider.name}`}
-                                        className="h-full w-full object-cover object-top"
-                                        loading="lazy"
-                                        referrerPolicy="no-referrer"
-                                    />
+                                <div className="h-32 w-24 overflow-hidden rounded-lg border border-slate-700 bg-slate-900">
+                                    <img src={rider.photo_url} alt={`Profielfoto van ${rider.name}`} className="h-full w-full object-cover object-top" loading="lazy" referrerPolicy="no-referrer" />
                                 </div>
                             ) : (
-                                <div className="flex h-28 w-24 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-500">
-                                    Geen foto
-                                </div>
+                                <div className="flex h-32 w-24 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-xs font-semibold text-slate-400">Geen foto</div>
                             )}
                         </div>
-                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{rider.team}</div>
-                        <h1 className="mt-4 font-display text-4xl font-semibold tracking-tight text-slate-950 sm:text-5xl">
-                            {rider.name}
-                        </h1>
-                        <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600">{rider.profile}</p>
+                        <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-slate-400"><span className="vp-icon-box"><User size={13} /></span>{rider.team || 'Onbekend team'}</div>
+                        <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight sm:text-5xl">{rider.name}</h1>
+                        <p className="mt-4 text-sm leading-7 text-slate-300">{rider.profile || 'Modeldata ontbreekt voor deze renner.'}</p>
 
-                        <div className="mt-8 grid gap-4 sm:grid-cols-3">
-                            <div className="rounded-[24px] bg-slate-50 p-4">
-                                <div className="text-xs uppercase tracking-[0.22em] text-slate-400">{rider.ratingLabel ?? 'Ranking'}</div>
-                                <div className="mt-2 text-3xl font-semibold text-slate-950">
-                                    {rider.rating ?? '–'}
-                                </div>
-                            </div>
-                            <div className="rounded-[24px] bg-teal-50 p-4">
-                                <div className="text-xs uppercase tracking-[0.22em] text-teal-700">{rider.strengthLabel ?? 'Gem. positie'}</div>
-                                <div className="mt-2 text-lg font-semibold text-teal-950">{rider.strength}</div>
-                            </div>
-                            <div className="rounded-[24px] bg-amber-50 p-4">
-                                <div className="text-xs uppercase tracking-[0.22em] text-amber-700">Nationaliteit</div>
-                                <div className="mt-2 text-lg font-semibold text-amber-950">
-                                    {rider.nationality ?? '–'}
-                                </div>
-                            </div>
+                        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4"><div className="text-xs uppercase tracking-[0.2em] text-slate-400">{rider.ratingLabel || 'Ranking'}</div><div className="mt-1 text-2xl font-semibold text-slate-100">{rider.rating ?? 'N/A'}</div></div>
+                            <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4"><div className="text-xs uppercase tracking-[0.2em] text-slate-400">{rider.strengthLabel || 'Signaal'}</div><div className="mt-1 text-sm font-semibold text-slate-100">{rider.strength || 'Geen data'}</div></div>
+                            <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4"><div className="text-xs uppercase tracking-[0.2em] text-slate-400">Leeftijd</div><div className="mt-1 text-sm font-semibold text-slate-100">{rider.age ? `${rider.age} jaar` : 'Onbekend'}</div></div>
                         </div>
                     </div>
 
                     <div className="vp-panel-dark p-6">
-                        <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{rider.trendLabel ?? 'Huidige trend'}</div>
-                        <div className="mt-4 font-display text-3xl font-semibold tracking-tight text-white">{rider.trend}</div>
-                        <p className="mt-4 text-sm leading-7 text-slate-300">{rider.outlook}</p>
-
-                        {/* Basisinfo */}
-                        <div className="mt-6 space-y-2 border-t border-white/10 pt-5">
-                            {rider.date_of_birth && (
-                                <div className="flex justify-between text-sm">
-                                    <span className="text-slate-400">Geboortedatum</span>
-                                    <span className="font-medium text-white">{rider.date_of_birth}</span>
-                                </div>
-                            )}
-                            {rider.age && (
-                                <div className="flex justify-between text-sm">
-                                    <span className="text-slate-400">Leeftijd</span>
-                                    <span className="font-medium text-white">{rider.age} jaar</span>
-                                </div>
-                            )}
-                            {rider.team && (
-                                <div className="flex justify-between text-sm">
-                                    <span className="text-slate-400">Ploeg</span>
-                                    <span className="font-medium text-white">{rider.team}</span>
-                                </div>
-                            )}
-                        </div>
+                        <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400"><span className="vp-icon-box"><TrendingUp size={13} /></span>Trend</div>
+                        <div className="mt-3 font-display text-3xl font-semibold">{rider.trend || 'Geen trend beschikbaar'}</div>
+                        <p className="mt-4 text-sm leading-7 text-slate-300">{rider.outlook || 'Nog geen context beschikbaar.'}</p>
                     </div>
                 </section>
 
-                {upcomingPredictions.length > 0 && (
+                {upcomingPredictions.length > 0 ? (
                     <section className="vp-panel p-6">
-                        <div className="mb-6">
-                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Voorspellingsdesk</div>
-                            <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">
-                                Komende koersverwachtingen
-                            </h2>
-                        </div>
-
-                        <div className="grid gap-4 lg:grid-cols-3">
+                        <h2 className="inline-flex items-center gap-2 font-display text-2xl font-semibold"><Calendar size={18} /> Komende predictions</h2>
+                        <div className="mt-4 grid gap-4 lg:grid-cols-3">
                             {upcomingPredictions.map((prediction) => (
-                                <Link
-                                    key={`${prediction.slug}-${prediction.position}`}
-                                    href={`/races/${prediction.slug}`}
-                                    className="rounded-[24px] border border-slate-100 bg-white p-5 transition hover:border-slate-950 hover:bg-slate-50"
-                                >
-                                    <div className="flex items-start justify-between gap-4">
-                                        <div>
-                                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
-                                                {prediction.date}
-                                            </div>
-                                            <div className="mt-2 font-display text-xl font-semibold tracking-tight text-slate-950">
-                                                {prediction.race}
-                                            </div>
-                                            {prediction.context && (
-                                                <div className="mt-2 text-xs font-semibold uppercase tracking-[0.22em] text-indigo-600">
-                                                    {prediction.context}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="rounded-2xl bg-slate-950 px-3 py-2 text-white">
-                                            <div className="text-[11px] uppercase tracking-[0.22em] text-slate-300">Projectie</div>
-                                            <div className="text-lg font-semibold">#{prediction.position}</div>
-                                        </div>
-                                    </div>
-
-                                    <div className="mt-5 grid grid-cols-2 gap-3">
-                                        <div className="rounded-2xl bg-slate-50 p-3">
-                                            <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Winkans</div>
-                                            <div className="mt-1 text-sm font-semibold text-slate-900">{prediction.win_probability}%</div>
-                                        </div>
-                                        <div className="rounded-2xl bg-teal-50 p-3">
-                                            <div className="text-xs uppercase tracking-[0.22em] text-teal-700">Top-10 kans</div>
-                                            <div className="mt-1 text-sm font-semibold text-teal-950">{prediction.top10_probability}%</div>
-                                        </div>
-                                    </div>
+                                <Link key={`${prediction.slug}-${prediction.position}`} href={`/races/${prediction.slug}`} className="rounded-lg border border-slate-700 bg-slate-900/70 p-4">
+                                    <div className="text-xs uppercase tracking-[0.2em] text-slate-400">{prediction.date}</div>
+                                    <div className="mt-2 font-semibold text-slate-100">{prediction.race}</div>
+                                    <div className="mt-3 text-xs text-slate-400">Projectie #{prediction.position}</div>
+                                    <div className="mt-2 text-sm text-slate-200">Win {prediction.win_probability}% · Top-10 {prediction.top10_probability}%</div>
                                 </Link>
                             ))}
                         </div>
                     </section>
-                )}
+                ) : null}
 
-                {explainability && (
-                    <section className="vp-panel p-6 sm:p-8">
-                        <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                            <div>
-                                <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Waarom deze inschatting?</div>
-                                <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">
-                                    {explainability.race.context}
-                                </h2>
-                                <Link
-                                    href={`/races/${explainability.race.slug}`}
-                                    className="mt-2 inline-block text-sm font-semibold text-indigo-700 hover:underline"
-                                >
-                                    {explainability.race.name} · {explainability.race.date}
-                                </Link>
-                            </div>
-                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
-                                Model {explainability.model_version}
-                            </div>
+                {explainability ? (
+                    <section className="vp-panel p-6">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <h2 className="inline-flex items-center gap-2 font-display text-2xl font-semibold"><Gauge size={18} /> Prediction context</h2>
+                            <span className="vp-accent-pill">Model {explainability.model_version}</span>
                         </div>
-
-                        <div className="grid gap-4 lg:grid-cols-5">
+                        <div className="mt-4 grid gap-4 lg:grid-cols-5">
                             {explainability.signals.map((signal) => (
-                                <article key={signal.label} className="rounded-[24px] border border-slate-100 bg-white p-4">
-                                    <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{signal.label}</div>
-                                    <div
-                                        className={`mt-2 font-display text-2xl font-semibold tracking-tight ${
-                                            signal.tone === 'good'
-                                                ? 'text-emerald-700'
-                                                : signal.tone === 'bad'
-                                                  ? 'text-rose-700'
-                                                  : 'text-slate-900'
-                                        }`}
-                                    >
-                                        {signal.value}
-                                    </div>
-                                    <p className="mt-2 text-sm leading-6 text-slate-600">{signal.detail}</p>
+                                <article key={signal.label} className="rounded-lg border border-slate-700 bg-slate-900/70 p-4">
+                                    <div className="text-xs uppercase tracking-[0.2em] text-slate-400">{signal.label}</div>
+                                    <div className="mt-2 text-lg font-semibold text-slate-100">{signal.value}</div>
+                                    <p className="mt-2 text-xs leading-6 text-slate-300">{signal.detail}</p>
                                 </article>
                             ))}
                         </div>
                     </section>
+                ) : (
+                    <EmptyState title="Geen modeluitleg" message="Modeldata ontbreekt voor deze renner in de geselecteerde context." />
                 )}
 
-                {/* Indicatoren */}
-                <section className="grid gap-4 lg:grid-cols-3">
-                    {indicators.map((indicator) => (
-                        <article key={indicator.label} className="vp-panel p-5">
-                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{indicator.label}</div>
-                            <div className="mt-3 font-display text-3xl font-semibold tracking-tight text-slate-950">{indicator.value}</div>
-                            <p className="mt-3 text-sm leading-6 text-slate-600">{indicator.text}</p>
-                        </article>
-                    ))}
-                </section>
+                {indicators.length > 0 ? (
+                    <section className="grid gap-4 lg:grid-cols-3">
+                        {indicators.map((indicator) => (
+                            <article key={indicator.label} className="vp-panel p-5">
+                                <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-slate-400"><span className="vp-icon-box"><Activity size={13} /></span>{indicator.label}</div>
+                                <div className="mt-2 font-display text-2xl font-semibold">{indicator.value}</div>
+                                <p className="mt-2 text-sm text-slate-300">{indicator.text}</p>
+                            </article>
+                        ))}
+                    </section>
+                ) : null}
 
-                {/* Recente resultaten tabel */}
-                {recentResults.length > 0 && (
+                {recentResults.length > 0 ? (
                     <section className="vp-panel p-6">
-                        <div className="mb-6">
-                            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">Palmares</div>
-                            <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight text-slate-950">
-                                Recente resultaten
-                            </h2>
-                        </div>
-
-                        <div className="overflow-x-auto">
+                        <h2 className="inline-flex items-center gap-2 font-display text-2xl font-semibold"><Flag size={18} /> Recente resultaten</h2>
+                        <div className="mt-4 overflow-x-auto">
                             <table className="w-full text-sm">
                                 <thead>
-                                    <tr className="border-b border-slate-100">
-                                        <th className="pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Koers</th>
-                                        <th className="hidden pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 sm:table-cell">Type</th>
-                                        <th className="hidden pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 md:table-cell">Datum</th>
-                                        <th className="hidden pb-3 text-left text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 lg:table-cell">Parcours</th>
-                                        <th className="pb-3 text-right text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Positie</th>
+                                    <tr className="border-b border-slate-700">
+                                        <th className="pb-3 text-left text-xs uppercase tracking-[0.2em] text-slate-400">Koers</th>
+                                        <th className="pb-3 text-left text-xs uppercase tracking-[0.2em] text-slate-400">Datum</th>
+                                        <th className="pb-3 text-right text-xs uppercase tracking-[0.2em] text-slate-400">Positie</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-50">
+                                <tbody className="divide-y divide-slate-800">
                                     {recentResults.map((r, i) => (
-                                        <tr key={i} className="transition-colors hover:bg-slate-50">
-                                            <td className="py-3">
-                                                <Link
-                                                    href={`/races/${r.slug}`}
-                                                    className="font-medium text-slate-900 hover:text-indigo-600"
-                                                >
-                                                    {r.race}
-                                                </Link>
-                                            </td>
-                                            <td className="hidden py-3 text-slate-500 sm:table-cell">{r.type}</td>
-                                            <td className="hidden py-3 text-slate-500 md:table-cell">{r.date}</td>
-                                            <td className="hidden py-3 lg:table-cell">
-                                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                                                    {r.parcours}
-                                                </span>
-                                            </td>
-                                            <td className="py-3 text-right">
-                                                <PositionBadge pos={r.position} status={r.status} />
-                                            </td>
+                                        <tr key={i}>
+                                            <td className="py-3"><Link href={`/races/${r.slug}`} className="text-slate-100 hover:text-white">{r.race}</Link></td>
+                                            <td className="py-3 text-slate-400">{r.date}</td>
+                                            <td className="py-3 text-right"><PositionBadge pos={r.position} status={r.status} /></td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
                         </div>
                     </section>
-                )}
+                ) : null}
             </div>
         </AppLayout>
     );

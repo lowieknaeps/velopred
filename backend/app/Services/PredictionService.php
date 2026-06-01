@@ -152,6 +152,12 @@ class PredictionService
                 $featuresBySlug,
                 $context['prediction_type'],
             );
+            $predictions = $this->applyInRaceStageFormAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
             $predictions = $this->applyStageDiversityAdjustments(
                 $predictions,
                 $race,
@@ -591,6 +597,7 @@ class PredictionService
                 ->where('rider_id', $rider->id)
                 ->whereNotNull('position')
                 ->where('status', 'finished')
+                ->orderByRaw('COALESCE(stage_number, 0) asc')
                 ->get(['result_type', 'stage_number', 'position']);
         $liveStageResults = $currentRaceResults->where('result_type', 'stage')->values();
         $liveClassification = $currentRaceResults->first(function ($result) use ($predictionType, $stageNumber) {
@@ -607,7 +614,16 @@ class PredictionService
         $liveStageResultsCount = $liveStageResults->count();
         $liveStageAveragePosition = $liveStageResultsCount > 0 ? round($liveStageResults->avg('position'), 2) : null;
         $liveStageBestPosition = $liveStageResultsCount > 0 ? (int) $liveStageResults->min('position') : null;
+        $liveStageWinsCount = $liveStageResults->filter(fn ($result) => (int) $result->position === 1)->count();
+        $liveStagePodiumCount = $liveStageResults->filter(fn ($result) => (int) $result->position <= 3)->count();
         $liveStageTop10Count = $liveStageResults->filter(fn ($result) => (int) $result->position <= 10)->count();
+        $liveStageTop10Rate = $liveStageResultsCount > 0
+            ? round(($liveStageTop10Count / $liveStageResultsCount) * 100, 2)
+            : null;
+        $liveStageRecent3 = $liveStageResults->take(-3)->values();
+        $liveStageRecentAvgPosition = $liveStageRecent3->isNotEmpty()
+            ? round($liveStageRecent3->avg('position'), 2)
+            : null;
         $liveClassificationPosition = $liveClassification?->position;
 
         // Historische resultaten vóór deze race (uit onze gesyncte races)
@@ -778,7 +794,11 @@ class PredictionService
                 'live_stage_results_count' => $liveStageResultsCount,
                 'live_stage_avg_position' => $liveStageAveragePosition,
                 'live_stage_best_position' => $liveStageBestPosition,
+                'live_stage_wins_count' => $liveStageWinsCount,
+                'live_stage_podium_count' => $liveStagePodiumCount,
                 'live_stage_top10_count' => $liveStageTop10Count,
+                'live_stage_top10_rate' => $liveStageTop10Rate,
+                'live_stage_recent_avg_position' => $liveStageRecentAvgPosition,
                 'live_classification_position' => $liveClassificationPosition,
                 'recent_one_day_position' => null,
                 'recent_one_day_days_ago' => null,
@@ -1125,7 +1145,11 @@ class PredictionService
             'live_stage_results_count' => $liveStageResultsCount,
             'live_stage_avg_position' => $liveStageAveragePosition,
             'live_stage_best_position' => $liveStageBestPosition,
+            'live_stage_wins_count' => $liveStageWinsCount,
+            'live_stage_podium_count' => $liveStagePodiumCount,
             'live_stage_top10_count' => $liveStageTop10Count,
+            'live_stage_top10_rate' => $liveStageTop10Rate,
+            'live_stage_recent_avg_position' => $liveStageRecentAvgPosition,
             'live_classification_position' => $liveClassificationPosition,
             'recent_one_day_position' => $recentOneDayPosition,
             'recent_one_day_days_ago' => $recentOneDayDaysAgo,
@@ -1136,6 +1160,89 @@ class PredictionService
             'age'                     => $age,
             'n_results'               => $contextPrior->count(),
         ];
+    }
+
+    private function applyInRaceStageFormAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || count($predictions) < 2) {
+            return $predictions;
+        }
+
+        $stageNumber = (int) ($context['stage_number'] ?? 0);
+        if ($stageNumber <= 1) {
+            return $predictions;
+        }
+
+        $updated = false;
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            $features = $slug !== '' ? ($featuresBySlug[$slug] ?? null) : null;
+            if (!is_array($features)) {
+                continue;
+            }
+
+            $count = max(0, (int) ($features['live_stage_results_count'] ?? 0));
+            if ($count < 2) {
+                continue;
+            }
+
+            $wins = max(0, (int) ($features['live_stage_wins_count'] ?? 0));
+            $podiums = max(0, (int) ($features['live_stage_podium_count'] ?? 0));
+            $top10Rate = max(0.0, min(100.0, (float) ($features['live_stage_top10_rate'] ?? 0.0)));
+            $recentAvg = isset($features['live_stage_recent_avg_position']) && is_numeric($features['live_stage_recent_avg_position'])
+                ? (float) $features['live_stage_recent_avg_position']
+                : null;
+
+            $boost = 1.0;
+            $boost += min(0.28, $wins * 0.10);
+            $boost += min(0.16, ($podiums / max(1, $count)) * 0.16);
+            $boost += min(0.14, ($top10Rate / 100.0) * 0.14);
+            if ($recentAvg !== null && $recentAvg > 0) {
+                $boost += min(0.12, max(0.0, (15.0 - $recentAvg) / 15.0) * 0.12);
+            }
+            $boost = min(1.55, $boost);
+
+            $currentWin = (float) ($prediction['win_probability'] ?? 0.0);
+            $currentTop10 = (float) ($prediction['top10_probability'] ?? 0.0);
+            $newWin = max(0.0, min(1.0, $currentWin * $boost));
+            $newTop10 = max(0.0, min(0.99, $currentTop10 * (1.0 + (($boost - 1.0) * 0.55))));
+
+            if (abs($newWin - $currentWin) > 0.0001 || abs($newTop10 - $currentTop10) > 0.0001) {
+                $predictions[$index]['win_probability'] = $newWin;
+                $predictions[$index]['top10_probability'] = $newTop10;
+                $updated = true;
+            }
+        }
+
+        if (!$updated) {
+            return $predictions;
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $i => $prediction) {
+            $predictions[$i]['predicted_position'] = $i + 1;
+        }
+
+        return $predictions;
     }
 
     private function buildPredictionContexts(Race $race): Collection

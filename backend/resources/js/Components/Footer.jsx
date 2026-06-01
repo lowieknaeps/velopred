@@ -11,10 +11,9 @@ export default function Footer() {
     return (
         <footer className="relative mt-20 pb-8 pt-12">
             <div className="vp-panel-dark overflow-hidden px-6 py-8 sm:px-8">
-                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
                 <div className="grid gap-8 lg:grid-cols-[1.3fr_0.7fr]">
                     <div className="space-y-5">
-                        <span className="vp-pill border-white/10 bg-white/5 text-slate-200">
+                        <span className="vp-pill border-slate-700 bg-slate-900 text-slate-200">
                             Serieuze koersanalyse voor competitief wielrennen
                         </span>
                         <BrandLockup dark />
@@ -36,7 +35,7 @@ export default function Footer() {
                                 <Link
                                     key={item.href}
                                     href={item.href}
-                                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:border-white/20 hover:bg-white/10"
+                                    className="rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
                                 >
                                     {item.label}
                                 </Link>

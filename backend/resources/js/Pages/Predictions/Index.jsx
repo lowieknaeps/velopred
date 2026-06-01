@@ -1,5 +1,6 @@
 import { Head, Link, router } from '@inertiajs/react';
 import { useMemo, useState } from 'react';
+import { PredictionTableSkeleton } from '../../Components/Skeletons';
 import PredictionEvaluationPanel from '../../Components/PredictionEvaluationPanel';
 import PredictionTable from '../../Components/PredictionTable';
 import SectionHeading from '../../Components/SectionHeading';
@@ -81,7 +82,7 @@ export default function PredictionsIndex({
                         <div className="flex flex-wrap items-center gap-3">
                             <Link
                                 href={`/races/${race.slug}`}
-                                className="font-display text-2xl font-semibold text-slate-950 hover:text-indigo-700"
+                                className="font-display text-2xl font-semibold text-slate-100 hover:text-amber-300"
                             >
                                 {race.name}
                             </Link>
@@ -203,7 +204,8 @@ export default function PredictionsIndex({
 
                 <div className="grid gap-8 lg:grid-cols-[1fr_280px]">
                     <div className="space-y-8">
-                        {hasPredictions && (
+                        {isSwitchingRace && <PredictionTableSkeleton rows={8} />}
+                        {!isSwitchingRace && hasPredictions && (
                             <section id="top10" className="vp-panel scroll-mt-24 p-6">
                                 <div className="mb-6 flex items-center justify-between gap-4">
                                     <div>
@@ -303,8 +305,23 @@ export default function PredictionsIndex({
 
                                             <PredictionTable
                                                 predictions={group.predictions}
+                                                showActual={(group.predictions ?? []).some((row) => row.actual_position != null)}
                                                 contextLink={{ race: race?.slug, type: group.key?.split(':')?.[0] ?? 'result', stage: Number(group.key?.split(':')?.[1] ?? 0) }}
                                             />
+
+                                            <div className="mt-5 border-t border-slate-100 pt-5">
+                                                {group.evaluation ? (
+                                                    <PredictionEvaluationPanel
+                                                        evaluation={group.evaluation}
+                                                        collapsible={(group.key ?? '').startsWith('stage:')}
+                                                        defaultExpanded={!(group.key ?? '').startsWith('stage:')}
+                                                    />
+                                                ) : (
+                                                    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-4 text-sm text-slate-400">
+                                                        Nog geen evaluatie beschikbaar voor deze context.
+                                                    </div>
+                                                )}
+                                            </div>
                                         </article>
                                     ))}
                                 </div>

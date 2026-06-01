@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -26,7 +27,7 @@ class RaceController extends Controller
         'il-lombardia',
     ];
     private const RERUN_STATUS_TTL_HOURS = 2;
-    private const RERUN_MAX_RUNNING_MINUTES = 12;
+    private const RERUN_MAX_RUNNING_MINUTES = 25;
     private const RERUN_LEGACY_MAX_RUNNING_MINUTES = 8;
     private const RERUN_EXPECTED_SECONDS = 180;
 
@@ -37,6 +38,9 @@ class RaceController extends Controller
     public function index(): Response
     {
         $currentYear = (int) date('Y');
+        $cacheKey = "races:index:{$currentYear}";
+
+        $payload = Cache::remember($cacheKey, now()->addSeconds(90), function () use ($currentYear) {
 
         $seasonRaces = Race::relevant()
             ->where('year', $currentYear)
@@ -81,7 +85,7 @@ class RaceController extends Controller
             ],
         ];
 
-        return Inertia::render('Races/Index', [
+            return [
             'highlights' => $highlights,
             'ongoing'    => $ongoing->map(fn(Race $r) => $this->formatRaceCard($r)),
             'upcoming'   => $upcoming->map(fn(Race $r) => $this->formatRaceCard($r)),
@@ -92,33 +96,49 @@ class RaceController extends Controller
                 ->concat($upcoming)
                 ->concat($recentPast)
                 ->map(fn(Race $r) => $this->formatRaceCard($r)),
-        ]);
+            ];
+        });
+
+        return Inertia::render('Races/Index', $payload);
     }
 
     public function show(string $slug): Response
     {
-        $race = Race::relevant()->where('pcs_slug', $slug)->orderBy('year', 'desc')->firstOrFail();
+        $race = Race::relevant()
+            ->with([
+                'entries:id,race_id,rider_id',
+                'predictions' => fn ($query) => $query
+                    ->orderBy('prediction_type')
+                    ->orderBy('stage_number')
+                    ->orderBy('predicted_position')
+                    ->with('rider.team'),
+                'results' => fn ($query) => $query
+                    ->whereNotNull('position')
+                    ->where('status', 'finished')
+                    ->with('rider.team'),
+                'predictionEvaluations',
+            ])
+            ->where('pcs_slug', $slug)
+            ->orderBy('year', 'desc')
+            ->firstOrFail();
         $primaryContext = $this->primaryPredictionContext($race);
 
-        // ── Actuele resultaten (als de race al gereden is) ──────────────────
-        $actualResults = $race->results()
-            ->where('result_type', $primaryContext['prediction_type'])
-            ->when($primaryContext['prediction_type'] === 'stage', fn($query) => $query->where('stage_number', $primaryContext['stage_number']))
-            ->whereNotNull('position')->where('status', 'finished')
-            ->orderBy('position')->limit(10)
-            ->with('rider.team')->get();
+        $startlistRiderIds = $race->entries->pluck('rider_id');
+        $hasStartlist = $startlistRiderIds->isNotEmpty();
 
-        // ── Predictions (top 10, gefilterd op startlijst als beschikbaar) ──
-        $startlistRiderIds = $race->entries()->pluck('rider_id');
-        $hasStartlist      = $startlistRiderIds->isNotEmpty();
+        $predictions = $race->predictions
+            ->when($hasStartlist && !$race->hasFinished(), fn ($rows) => $rows->whereIn('rider_id', $startlistRiderIds))
+            ->values();
 
-        $predictions = $race->predictions()
-            ->when($hasStartlist && !$race->hasFinished(), fn($q) => $q->whereIn('rider_id', $startlistRiderIds))
-            ->orderBy('prediction_type')
-            ->orderBy('stage_number')
-            ->orderBy('predicted_position')
-            ->with('rider.team')
-            ->get();
+        $actualResults = $race->results
+            ->filter(fn ($result) => $result->result_type === $primaryContext['prediction_type'])
+            ->when(
+                $primaryContext['prediction_type'] === 'stage',
+                fn ($rows) => $rows->where('stage_number', (int) $primaryContext['stage_number'])
+            )
+            ->sortBy('position')
+            ->take(10)
+            ->values();
 
         $primaryPredictions = $predictions
             ->filter(fn($prediction) => $prediction->prediction_type === $primaryContext['prediction_type']
@@ -126,9 +146,7 @@ class RaceController extends Controller
             ->sortBy('predicted_position')
             ->take(10)
             ->values();
-        $latestPrediction = $predictions
-            ->sortByDesc(fn ($prediction) => optional($prediction->updated_at)->timestamp ?? 0)
-            ->first();
+        $latestPrediction = $predictions->sortByDesc(fn ($prediction) => optional($prediction->updated_at)->timestamp ?? 0)->first();
         // Key by rider slug to avoid missing matches when rider IDs differ due to slug aliases/duplicates.
         $actualByRiderSlug = $actualResults->keyBy(fn ($r) => (string) $r->rider->pcs_slug);
 
@@ -148,12 +166,21 @@ class RaceController extends Controller
             ];
         })->values()->toArray();
 
-        $allActualResults = $race->results()
-            ->whereNotNull('position')
-            ->where('status', 'finished')
-            ->with('rider:id,pcs_slug')
-            ->get(['rider_id', 'result_type', 'stage_number', 'position']);
-        $predictionGroups = $this->formatPredictionGroups($race, $predictions, $primaryContext, $allActualResults);
+        $allActualResults = $race->results
+            ->filter(fn ($row) => $row->rider?->pcs_slug)
+            ->values();
+
+        $cacheVersion = implode('|', [
+            optional($predictions->max('updated_at'))?->timestamp ?? 0,
+            optional($allActualResults->max('updated_at'))?->timestamp ?? 0,
+            optional($race->predictionEvaluations->max('evaluated_at'))?->timestamp ?? 0,
+            optional($race->startlist_synced_at)?->timestamp ?? 0,
+            optional($race->synced_at)?->timestamp ?? 0,
+        ]);
+        $groupsCacheKey = "race:{$race->id}:groups:" . md5($cacheVersion);
+        $predictionGroups = Cache::remember($groupsCacheKey, now()->addSeconds(90), function () use ($race, $predictions, $primaryContext, $allActualResults) {
+            return $this->formatPredictionGroups($race, $predictions, $primaryContext, $allActualResults);
+        });
 
         // ── Contenders (voor het Show component) ───────────────────────────
         $contenders = [];
@@ -174,7 +201,10 @@ class RaceController extends Controller
         }
 
         // ── Race scenarios ──────────────────────────────────────────────────
-        $scenarios = $this->buildScenarios($race, $primaryPredictions);
+        $scenariosCacheKey = "race:{$race->id}:scenarios:" . md5($cacheVersion . '|' . $primaryContext['prediction_type'] . '|' . (int) $primaryContext['stage_number']);
+        $scenarios = Cache::remember($scenariosCacheKey, now()->addSeconds(90), function () use ($race, $primaryPredictions) {
+            return $this->buildScenarios($race, $primaryPredictions);
+        });
 
         // ── Signalen ────────────────────────────────────────────────────────
         $participantCount = $actualResults->count() ?: $race->entries()->count() ?: '–';
@@ -224,7 +254,11 @@ class RaceController extends Controller
             'predictionGroups' => $predictionGroups,
             'scenarios'   => $scenarios['list'] ?? [],
             'has_results' => $actualResults->isNotEmpty(),
-            'evaluation'  => $this->formatEvaluationPayload($race, $primaryContext),
+            'evaluation'  => Cache::remember(
+                "race:{$race->id}:evaluation:" . md5($cacheVersion . '|' . $primaryContext['prediction_type'] . '|' . (int) $primaryContext['stage_number']),
+                now()->addSeconds(90),
+                fn () => $this->formatEvaluationPayload($race, $primaryContext)
+            ),
         ]);
     }
 
@@ -237,11 +271,18 @@ class RaceController extends Controller
         $latestPredictionAt = $this->asCarbon($race->predictions()->max('updated_at'));
         $primaryContext = $this->primaryPredictionContext($race);
         $baselineSnapshot = $this->buildTopPredictionSnapshot($race, $primaryContext);
+        $baselineModelVersion = $race->predictions()
+            ->where('prediction_type', $primaryContext['prediction_type'])
+            ->where('stage_number', (int) $primaryContext['stage_number'])
+            ->orderBy('updated_at', 'desc')
+            ->value('model_version');
         $startedAt = now();
         $token = (string) Str::uuid();
-        $lockFile = "/tmp/velopred-rerun-{$race->id}-{$token}.lock";
-        $doneFile = "/tmp/velopred-rerun-{$race->id}-{$token}.done";
-        $logFile = "/tmp/velopred-rerun-{$race->id}-{$token}.log";
+        $rerunDir = storage_path('app/reruns');
+        File::ensureDirectoryExists($rerunDir);
+        $lockFile = $rerunDir . DIRECTORY_SEPARATOR . "velopred-rerun-{$race->id}-{$token}.lock";
+        $doneFile = $rerunDir . DIRECTORY_SEPARATOR . "velopred-rerun-{$race->id}-{$token}.done";
+        $logFile = $rerunDir . DIRECTORY_SEPARATOR . "velopred-rerun-{$race->id}-{$token}.log";
         $aiServiceUrl = (string) config('services.ai_service.url', 'http://127.0.0.1:8001');
 
         Cache::put($this->rerunStatusCacheKey($race), [
@@ -250,29 +291,28 @@ class RaceController extends Controller
             'baseline_prediction_updated_at' => $latestPredictionAt?->toIso8601String(),
             'baseline_context' => $primaryContext,
             'baseline_snapshot' => $baselineSnapshot,
+            'baseline_model_version' => $baselineModelVersion,
             'run_token' => $token,
             'lock_file' => $lockFile,
             'done_file' => $doneFile,
             'log_file' => $logFile,
         ], now()->addHours(self::RERUN_STATUS_TTL_HOURS));
 
-        // Draai de predict-command echt detached met lock/done marker.
-        // Zo kunnen we status betrouwbaar volgen, ook na pagina-refresh.
-        $syncCmd = $race->isStageRace()
-            ? sprintf(
-                'AI_SERVICE_URL=%s %s artisan sync:race %s %s >> %s 2>&1;',
-                escapeshellarg($aiServiceUrl),
-                escapeshellarg(PHP_BINARY),
-                escapeshellarg($race->pcs_slug),
-                escapeshellarg((string) $race->year),
-                escapeshellarg($logFile),
-            )
-            : '';
+        // Draai detached met lock/done marker, platform-correct voor Windows + Unix.
+        if (DIRECTORY_SEPARATOR === '\\') {
+            $syncCmd = $race->isStageRace()
+                ? sprintf(
+                    'set AI_SERVICE_URL=%s && %s artisan sync:race %s %s >> %s 2>&1 && ',
+                    escapeshellarg($aiServiceUrl),
+                    escapeshellarg(PHP_BINARY),
+                    escapeshellarg($race->pcs_slug),
+                    escapeshellarg((string) $race->year),
+                    escapeshellarg($logFile),
+                )
+                : '';
 
-        $cmd = sprintf(
-            "/bin/sh -lc %s",
-            escapeshellarg(sprintf(
-                'touch %s; cd %s && %s AI_SERVICE_URL=%s %s artisan predict:race %s %s >> %s 2>&1; rc=$?; echo $rc > %s; rm -f %s',
+            $script = sprintf(
+                'type nul > %s && cd /d %s && %sset AI_SERVICE_URL=%s && %s artisan predict:race %s %s >> %s 2>&1 & set RC=%%ERRORLEVEL%% & (echo %%RC%% > %s) & del /f /q %s',
                 escapeshellarg($lockFile),
                 escapeshellarg(base_path()),
                 $syncCmd,
@@ -283,9 +323,40 @@ class RaceController extends Controller
                 escapeshellarg($logFile),
                 escapeshellarg($doneFile),
                 escapeshellarg($lockFile),
-            ))
-        );
-        exec($cmd . ' > /dev/null 2>&1 &');
+            );
+
+            // Start detached achtergrondproces op Windows.
+            pclose(popen('start /B cmd /C "' . $script . '"', 'r'));
+        } else {
+            $syncCmd = $race->isStageRace()
+                ? sprintf(
+                    'AI_SERVICE_URL=%s %s artisan sync:race %s %s >> %s 2>&1;',
+                    escapeshellarg($aiServiceUrl),
+                    escapeshellarg(PHP_BINARY),
+                    escapeshellarg($race->pcs_slug),
+                    escapeshellarg((string) $race->year),
+                    escapeshellarg($logFile),
+                )
+                : '';
+
+            $cmd = sprintf(
+                "/bin/sh -lc %s",
+                escapeshellarg(sprintf(
+                    'touch %s; cd %s && %s AI_SERVICE_URL=%s %s artisan predict:race %s %s >> %s 2>&1; rc=$?; echo $rc > %s; rm -f %s',
+                    escapeshellarg($lockFile),
+                    escapeshellarg(base_path()),
+                    $syncCmd,
+                    escapeshellarg($aiServiceUrl),
+                    escapeshellarg(PHP_BINARY),
+                    escapeshellarg($race->pcs_slug),
+                    escapeshellarg((string) $race->year),
+                    escapeshellarg($logFile),
+                    escapeshellarg($doneFile),
+                    escapeshellarg($lockFile),
+                ))
+            );
+            exec($cmd . ' > /dev/null 2>&1 &');
+        }
 
         return back(303);
     }
@@ -452,6 +523,7 @@ class RaceController extends Controller
     {
         $baselineSnapshot = collect($state['baseline_snapshot'] ?? []);
         $context = $state['baseline_context'] ?? $this->primaryPredictionContext($race);
+        $baselineModelVersion = (string) ($state['baseline_model_version'] ?? '');
 
         if ($baselineSnapshot->isEmpty()) {
             return null;
@@ -499,14 +571,36 @@ class RaceController extends Controller
             })
             ->count();
 
+        $avgWinShiftPp = $overlapSlugs->isEmpty()
+            ? 0.0
+            : round($overlapSlugs
+                ->map(function ($slug) use ($baselineBySlug, $currentBySlug) {
+                    $oldWin = (float) ($baselineBySlug[$slug]['win_probability'] ?? 0.0);
+                    $newWin = (float) ($currentBySlug[$slug]['win_probability'] ?? 0.0);
+
+                    return abs($newWin - $oldWin);
+                })
+                ->avg(), 2);
+
+        $currentModelVersion = (string) ($race->predictions()
+            ->where('prediction_type', $context['prediction_type'])
+            ->where('stage_number', (int) $context['stage_number'])
+            ->orderBy('updated_at', 'desc')
+            ->value('model_version') ?? '');
+        $modelVersionChanged = $baselineModelVersion !== '' && $currentModelVersion !== '' && $baselineModelVersion !== $currentModelVersion;
+
         return [
             'top10_overlap' => $top10Overlap,
             'exact_positions' => $exactPositions,
             'new_entries' => $newEntries,
             'dropped_entries' => $droppedEntries,
             'win_probability_shifts' => $winProbabilityShifts,
+            'avg_win_shift_pp' => $avgWinShiftPp,
+            'baseline_model_version' => $baselineModelVersion ?: null,
+            'current_model_version' => $currentModelVersion ?: null,
+            'model_version_changed' => $modelVersionChanged,
             'movers' => $movers->take(3)->all(),
-            'has_changes' => $exactPositions < 10 || $newEntries > 0 || $droppedEntries > 0 || $winProbabilityShifts > 0,
+            'has_changes' => $exactPositions < 10 || $newEntries > 0 || $droppedEntries > 0 || $winProbabilityShifts > 0 || $modelVersionChanged,
             'current_snapshot' => $currentSnapshot->all(),
         ];
     }
@@ -927,7 +1021,7 @@ class RaceController extends Controller
                 (int) $group->first()->stage_number,
                 $race
             ))
-            ->map(function ($group) use ($primaryContext, $actualByContext) {
+            ->map(function ($group) use ($race, $primaryContext, $actualByContext) {
                 $first = $group->first();
                 $ctxKey = $first->prediction_type . ':' . (int) $first->stage_number;
                 $actualForCtx = $actualByContext->get($ctxKey, collect());
@@ -938,6 +1032,10 @@ class RaceController extends Controller
                     'subtitle'   => null,
                     'is_primary' => $first->prediction_type === $primaryContext['prediction_type']
                         && (int) $first->stage_number === (int) $primaryContext['stage_number'],
+                    'evaluation' => $this->formatEvaluationPayload($race, [
+                        'prediction_type' => $first->prediction_type,
+                        'stage_number' => (int) $first->stage_number,
+                    ]),
                     'predictions' => $group
                         ->sortBy('predicted_position')
                         ->take(10)

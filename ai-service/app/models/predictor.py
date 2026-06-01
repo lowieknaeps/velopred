@@ -1038,7 +1038,7 @@ class VelopredPredictor:
     # ── Trainen ───────────────────────────────────────────────────────────────
 
     def train(self, db_path: str) -> dict:
-        print("📊 Trainingsdata laden...")
+        print("[train] Trainingsdata laden...")
         df_all = self._load_training_data(db_path)
         print(f"   {len(df_all)} samples totaal")
 
@@ -1055,7 +1055,7 @@ class VelopredPredictor:
             df = df_all[df_all["parcours_type"].isin(parcours_in_group)].copy()
 
             if len(df) < 30:
-                print(f"   ⚠️  {group}: te weinig data ({len(df)}), gebruik default model")
+                print(f"   [warn] {group}: te weinig data ({len(df)}), gebruik default model")
                 continue
 
             feature_cols = GROUP_FEATURES.get(group, BASE_FEATURE_COLS)
@@ -1102,7 +1102,7 @@ class VelopredPredictor:
 
             stats[group] = {"samples": len(df), "mae_cv": round(mae, 2)}
             groups_trained.append(group)
-            print(f"   ✅ {group}: {len(df)} samples, MAE = {mae:.2f}")
+            print(f"   [ok] {group}: {len(df)} samples, MAE = {mae:.2f}")
 
         self._loaded = True
 
@@ -1122,7 +1122,7 @@ class VelopredPredictor:
         if not examples:
             raise ValueError("No examples provided")
 
-        print("📊 Trainingsdata (examples) laden...")
+        print("[train] Trainingsdata (examples) laden...")
         df_all = pd.DataFrame(examples)
 
         if "position" not in df_all.columns:
@@ -1152,7 +1152,7 @@ class VelopredPredictor:
             df = df_all[df_all["parcours_type"].isin(parcours_in_group)].copy()
 
             if len(df) < 30:
-                print(f"   ⚠️  {group}: te weinig data ({len(df)}), skip")
+                print(f"   [warn] {group}: te weinig data ({len(df)}), skip")
                 continue
 
             feature_cols = GROUP_FEATURES.get(group, BASE_FEATURE_COLS)
@@ -1206,7 +1206,7 @@ class VelopredPredictor:
             joblib.dump(medians, _medians_path(group))
 
             stats[group] = {"samples": len(df), "mae_cv": round(mae, 2)}
-            print(f"   ✅ {group}: {len(df)} samples, MAE = {mae:.2f}")
+            print(f"   [ok] {group}: {len(df)} samples, MAE = {mae:.2f}")
 
         self._loaded = True
 

@@ -79,7 +79,9 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
 
         foreach ($ongoing as $race) {
             try {
-                $raceSyncService->syncRace($race->pcs_slug, $race->year);
+                $race = $raceSyncService->syncRace($race->pcs_slug, $race->year);
+                $postSync = $postResultSync->handle($race, false);
+                $refreshUpcomingPredictions = $refreshUpcomingPredictions || ($postSync['evaluated'] ?? false);
                 Log::info("[AutoSync] Bezig race gesynchroniseerd: {$race->name}");
             } catch (\Throwable $e) {
                 Log::warning("[AutoSync] Bezig race mislukt: {$race->name}: {$e->getMessage()}");

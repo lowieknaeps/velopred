@@ -17,7 +17,11 @@ class ExternalCyclingApiService
 
     public function __construct()
     {
-        $this->baseUrl = rtrim(config('services.ai_service.url', 'http://localhost:8000'), '/');
+        $raw = (string) config('services.ai_service.url', 'http://localhost:8000');
+        // Defensively normalize env/config values like `"http://127.0.0.1:8002" `.
+        $normalized = trim($raw);
+        $normalized = trim($normalized, "\"' \t\n\r\0\x0B");
+        $this->baseUrl = rtrim($normalized, '/');
     }
 
     // ── Race ──────────────────────────────────────────────────────────────────
