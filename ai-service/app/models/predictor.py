@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v41"
+MODEL_VERSION = "v46"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -1730,6 +1730,93 @@ class VelopredPredictor:
                 parcours_bonus *= 0.35 + stage_profile_fit * 0.80
                 subtype_bonus *= 0.55 + stage_profile_fit * 0.90
                 subtype_bonus *= 0.45 + stage_speciality_fit * 0.95
+
+            if prediction_type == "stage" and race_days >= 18 and stage_subtype in {"sprint", "reduced_sprint", "hilly", "mixed"}:
+                current_year_avg_value = None if current_year_avg in (None, "") else float(current_year_avg)
+                recent_pct = float(rider.get("field_pct_recent_form", 0.5) or 0.5)
+                season_pct = float(rider.get("field_pct_season_form", 0.5) or 0.5)
+                form_collapse_score = float(rider.get("form_collapse_score", 0.0) or 0.0)
+                reliable_poor_form = float(rider.get("reliable_poor_form", 0.0) or 0.0)
+
+                poor_form_severity = 0.0
+                if current_year_avg_value is not None and current_year_results_count >= 5.0:
+                    poor_form_severity += max(0.0, (current_year_avg_value - 28.0) / 22.0)
+                    if wins_current_year <= 0.0 and podiums_current_year <= 1.0:
+                        poor_form_severity += 0.20
+                    poor_form_severity += max(0.0, 0.44 - season_pct) * 1.25
+                    poor_form_severity += max(0.0, 0.48 - recent_pct)
+                    poor_form_severity += max(0.0, 42.0 - current_year_top10) / 100.0
+                poor_form_severity = float(np.clip(
+                    max(poor_form_severity, reliable_poor_form, max(0.0, form_collapse_score) * 0.62),
+                    0.0,
+                    1.0,
+                ))
+
+                if poor_form_severity >= 0.28 and stage_subtype in {"sprint", "reduced_sprint"}:
+                    stage_role_penalty += 10.0 * poor_form_severity
+                    stage_role_penalty += max(0.0, poor_form_severity - 0.55) * 10.0
+                    if stage_subtype == "sprint":
+                        stage_role_penalty += max(0.0, 0.56 - stage_profile_fit) * 4.0
+                    else:
+                        stage_role_penalty += max(0.0, 0.60 - stage_profile_fit) * 5.5
+
+                sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
+                one_day_raw = float(rider.get("pcs_speciality_one_day", 0) or 0) / 10000.0
+                classic_stage_fit = float(np.clip(
+                    one_day_raw * 0.50 + hills_raw * 0.32 + sprint_raw * 0.18,
+                    0.0,
+                    1.0,
+                ))
+                form_ok = (
+                    poor_form_severity < 0.42
+                    and (
+                        current_year_avg_value is None
+                        or current_year_avg_value <= 28.0
+                        or current_year_top10 >= 48.0
+                    )
+                )
+                if stage_subtype == "sprint" and sprint_raw < 0.12 and one_day_raw < 0.45 and hills_raw < 0.35:
+                    stage_role_penalty += 10.0 + (0.12 - sprint_raw) * 90.0
+                if stage_subtype == "sprint" and sprint_raw < 0.25 and one_day_raw < 0.70:
+                    stage_role_penalty += 4.0 + (0.25 - sprint_raw) * 40.0
+
+                if (
+                    classic_stage_fit >= 0.56
+                    and (one_day_raw >= 0.70 or hills_raw >= 0.45)
+                    and form_ok
+                ):
+                    avg_this_race = rider.get("avg_position_this_race")
+                    avg_this_race_value = None if avg_this_race in (None, "") else float(avg_this_race)
+                    history_signal = min(
+                        1.0,
+                        wins_this_race * 0.38
+                        + podiums_this_race * 0.16
+                        + (0.0 if avg_this_race_value is None else max(0.0, (24.0 - avg_this_race_value) / 24.0) * 0.26),
+                    )
+                    form_signal = min(
+                        1.0,
+                        (0.16 if current_year_avg_value is None else max(0.0, (30.0 - current_year_avg_value) / 30.0) * 0.34)
+                        + min(1.0, current_year_top10 / 100.0) * 0.30
+                        + recent_pct * 0.22
+                        + season_pct * 0.14,
+                    )
+                    profile_signal = min(1.0, max(0.0, (classic_stage_fit - 0.56) / 0.30))
+                    profile_signal = max(profile_signal, max(0.0, float(rider.get("punch_profile_score", 25.0) or 25.0) / 100.0 - 0.58) * 0.85)
+
+                    if stage_subtype in {"reduced_sprint", "hilly", "mixed"}:
+                        subtype_bonus += 7.0 * profile_signal + 4.0 * form_signal + 4.5 * history_signal
+                        subtype_bonus += max(0.0, speciality_one_day_pct[idx] - 0.58) * 5.5
+                        subtype_bonus += max(0.0, speciality_hills_pct[idx] - 0.50) * 3.5
+                    elif stage_subtype == "sprint":
+                        pure_sprint_fit = max(sprint_raw, speciality_sprint_pct[idx])
+                        if sprint_raw < 0.30 and one_day_raw >= 0.70:
+                            stage_role_penalty += (0.34 - sprint_raw) * 28.0
+                            stage_role_penalty += max(0.0, one_day_raw - sprint_raw) * 6.0
+
+                        subtype_bonus += max(0.0, sprint_profile_fit - 0.68) * 1.0
+                        subtype_bonus += max(0.0, pure_sprint_fit - 0.58) * 1.2
+                        subtype_bonus += min(0.8, form_signal * 0.45 + history_signal * 0.35)
 
             trend_bonus = np.clip(-form_trend, 0.0, 10.0) * 0.2
             if prediction_type == "stage":

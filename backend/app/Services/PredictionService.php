@@ -160,6 +160,12 @@ class PredictionService
                 $context,
                 $featuresBySlug,
             );
+            $predictions = $this->applyGrandTourStageProfileAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
             $predictions = $this->applyStageDiversityAdjustments(
                 $predictions,
                 $race,
@@ -557,7 +563,7 @@ class PredictionService
         $teamGlobalCounts = $this->stageFavouriteTeamCounts[$teamGlobalKey] ?? [];
         $teamSubtypeCounts = $this->stageFavouriteTeamCounts[$teamSubtypeKey] ?? [];
         $profile = match ($stageSubtype) {
-            'sprint' => ['global_decay' => 0.80, 'subtype_decay' => 0.66, 'floor' => 0.36, 'force_after' => 2, 'required_ratio' => 1.18, 'required_gap' => 0.018],
+            'sprint' => ['global_decay' => 0.92, 'subtype_decay' => 0.86, 'floor' => 0.68, 'force_after' => 4, 'required_ratio' => 1.10, 'required_gap' => 0.012],
             'reduced_sprint' => ['global_decay' => 0.78, 'subtype_decay' => 0.64, 'floor' => 0.34, 'force_after' => 2, 'required_ratio' => 1.20, 'required_gap' => 0.020],
             'summit_finish' => ['global_decay' => 0.66, 'subtype_decay' => 0.54, 'floor' => 0.18, 'force_after' => 1, 'required_ratio' => 1.32, 'required_gap' => 0.028],
             'high_mountain' => ['global_decay' => 0.62, 'subtype_decay' => 0.50, 'floor' => 0.16, 'force_after' => 1, 'required_ratio' => 1.36, 'required_gap' => 0.032],
@@ -566,8 +572,16 @@ class PredictionService
             'tt', 'ttt' => ['global_decay' => 0.88, 'subtype_decay' => 0.78, 'floor' => 0.48, 'force_after' => 3, 'required_ratio' => 1.12, 'required_gap' => 0.015],
             default => ['global_decay' => 0.76, 'subtype_decay' => 0.64, 'floor' => 0.28, 'force_after' => 2, 'required_ratio' => 1.22, 'required_gap' => 0.020],
         };
-        $teamGlobalDecay = in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) ? 0.76 : 0.84;
-        $teamSubtypeDecay = in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) ? 0.70 : 0.78;
+        $teamGlobalDecay = match (true) {
+            $stageSubtype === 'sprint' => 0.94,
+            in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) => 0.76,
+            default => 0.84,
+        };
+        $teamSubtypeDecay = match (true) {
+            $stageSubtype === 'sprint' => 0.90,
+            in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) => 0.70,
+            default => 0.78,
+        };
 
         foreach ($predictions as $i => $pred) {
             $slug = (string) ($pred['rider_slug'] ?? '');
@@ -707,8 +721,12 @@ class PredictionService
         $topPrev = (int) ($globalCounts[$topSlug] ?? 0);
         $teamPrev = $topTeam !== '' ? (int) ($teamGlobalCounts[$topTeam] ?? 0) : 0;
 
-        $riderMax = in_array($stageSubtype, ['tt', 'ttt'], true) ? 2 : 3;
-        $teamMax = 3;
+        $riderMax = match ($stageSubtype) {
+            'tt', 'ttt' => 2,
+            'sprint' => 5,
+            default => 3,
+        };
+        $teamMax = $stageSubtype === 'sprint' ? 5 : 3;
         $teamLimited = $topTeam !== '' && $teamPrev >= $teamMax;
         $riderLimited = $topPrev >= $riderMax;
         if (!$teamLimited && !$riderLimited) {
@@ -1570,6 +1588,212 @@ class PredictionService
 
         foreach ($predictions as $i => $prediction) {
             $predictions[$i]['predicted_position'] = $i + 1;
+        }
+
+        return $predictions;
+    }
+
+    private function applyGrandTourStageProfileAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || count($predictions) < 2) {
+            return $predictions;
+        }
+
+        $raceDays = max(1, $race->start_date->diffInDays($race->end_date) + 1);
+        $stageSubtype = (string) ($context['stage_subtype'] ?? '');
+        if ($raceDays < 18 || !in_array($stageSubtype, ['sprint', 'reduced_sprint', 'hilly', 'mixed'], true)) {
+            return $predictions;
+        }
+
+        $updated = false;
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            $features = $slug !== '' ? ($featuresBySlug[$slug] ?? null) : null;
+            if (!is_array($features)) {
+                continue;
+            }
+
+            $currentWin = (float) ($prediction['win_probability'] ?? 0.0);
+            $currentTop10 = (float) ($prediction['top10_probability'] ?? 0.0);
+            $newWin = $currentWin;
+            $newTop10 = $currentTop10;
+            $featurePatch = [];
+
+            $currentYearAvg = isset($features['current_year_avg_position']) && is_numeric($features['current_year_avg_position'])
+                ? (float) $features['current_year_avg_position']
+                : null;
+            $currentYearTop10 = isset($features['current_year_top10_rate']) && is_numeric($features['current_year_top10_rate'])
+                ? (float) $features['current_year_top10_rate']
+                : null;
+            $currentYearCount = max(0.0, (float) ($features['current_year_results_count'] ?? 0.0));
+            $winsCurrentYear = max(0.0, (float) ($features['wins_current_year'] ?? 0.0));
+            $podiumsCurrentYear = max(0.0, (float) ($features['podiums_current_year'] ?? 0.0));
+            $recentPct = min(1.0, max(0.0, (float) ($features['field_pct_recent_form'] ?? 0.5)));
+            $seasonPct = min(1.0, max(0.0, (float) ($features['field_pct_season_form'] ?? 0.5)));
+
+            $poorFormSeverity = 0.0;
+            if ($currentYearAvg !== null && $currentYearCount >= 5.0) {
+                $poorFormSeverity += max(0.0, ($currentYearAvg - 28.0) / 22.0);
+                if ($winsCurrentYear <= 0.0 && $podiumsCurrentYear <= 1.0) {
+                    $poorFormSeverity += 0.20;
+                }
+                $poorFormSeverity += max(0.0, 0.44 - $seasonPct) * 1.25;
+                $poorFormSeverity += max(0.0, 0.48 - $recentPct) * 1.00;
+                if ($currentYearTop10 !== null) {
+                    $poorFormSeverity += max(0.0, 42.0 - $currentYearTop10) / 100.0;
+                }
+                $poorFormSeverity = min(1.0, $poorFormSeverity);
+            }
+
+            if ($poorFormSeverity >= 0.28 && in_array($stageSubtype, ['sprint', 'reduced_sprint'], true)) {
+                $factor = max(0.24, 1.0 - ($poorFormSeverity * 0.74));
+                $top10Factor = max(0.48, 1.0 - ($poorFormSeverity * 0.46));
+                $cap = $stageSubtype === 'sprint'
+                    ? max(0.026, 0.095 - ($poorFormSeverity * 0.070))
+                    : max(0.018, 0.060 - ($poorFormSeverity * 0.040));
+
+                $newWin = min($newWin * $factor, $cap);
+                $newTop10 = min($newTop10 * $top10Factor, $stageSubtype === 'sprint' ? 0.34 : 0.26);
+                $featurePatch['grand_tour_stage_form_penalty'] = round($poorFormSeverity, 4);
+            }
+
+            $sprintSpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_sprint'] ?? 0.0) / 10000.0));
+            $hillsSpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_hills'] ?? 0.0) / 10000.0));
+            $oneDaySpeciality = min(1.0, max(0.0, (float) ($features['pcs_speciality_one_day'] ?? 0.0) / 10000.0));
+            $stageFit = $this->stageProfileFitScore($features);
+            $sprintProfile = min(1.0, max(0.0, (float) ($features['sprint_profile_score'] ?? 25.0) / 100.0));
+            $punchProfile = min(1.0, max(0.0, (float) ($features['punch_profile_score'] ?? 25.0) / 100.0));
+            $classicStageFit = min(1.0, max(0.0, $oneDaySpeciality * 0.50 + $hillsSpeciality * 0.32 + $sprintSpeciality * 0.18));
+
+            if (
+                $stageSubtype === 'sprint'
+                && $sprintSpeciality < 0.12
+                && $oneDaySpeciality < 0.45
+                && $hillsSpeciality < 0.35
+            ) {
+                $newWin = min($newWin, 0.018);
+                $newTop10 = min($newTop10, 0.46);
+                $featurePatch['grand_tour_pure_sprint_role_cap'] = round($sprintSpeciality, 4);
+            }
+
+            if (
+                $stageSubtype === 'sprint'
+                && $sprintSpeciality < 0.25
+                && $oneDaySpeciality < 0.70
+            ) {
+                $newWin = min($newWin, 0.036);
+                $newTop10 = min($newTop10, 0.78);
+                $featurePatch['grand_tour_low_sprint_speciality_cap'] = round($sprintSpeciality, 4);
+            }
+
+            $formOk = $poorFormSeverity < 0.42
+                && (
+                    $currentYearAvg === null
+                    || $currentYearAvg <= 28.0
+                    || ($currentYearTop10 !== null && $currentYearTop10 >= 48.0)
+                );
+            $isClassicStageEngine = $classicStageFit >= 0.56
+                && ($oneDaySpeciality >= 0.70 || $hillsSpeciality >= 0.45)
+                && $formOk;
+
+            if ($isClassicStageEngine && in_array($stageSubtype, ['sprint', 'reduced_sprint', 'hilly', 'mixed'], true)) {
+                $winsThisRace = max(0.0, (float) ($features['wins_this_race'] ?? 0.0));
+                $podiumsThisRace = max(0.0, (float) ($features['podiums_this_race'] ?? 0.0));
+                $avgThisRace = isset($features['avg_position_this_race']) && is_numeric($features['avg_position_this_race'])
+                    ? (float) $features['avg_position_this_race']
+                    : null;
+                $historySignal = min(
+                    1.0,
+                    ($winsThisRace * 0.38)
+                    + ($podiumsThisRace * 0.16)
+                    + ($avgThisRace !== null ? max(0.0, (24.0 - $avgThisRace) / 24.0) * 0.26 : 0.0)
+                );
+                $formSignal = min(
+                    1.0,
+                    ($currentYearAvg !== null ? max(0.0, (30.0 - $currentYearAvg) / 30.0) * 0.34 : 0.16)
+                    + ($currentYearTop10 !== null ? min(1.0, $currentYearTop10 / 100.0) * 0.30 : 0.0)
+                    + ($recentPct * 0.22)
+                    + ($seasonPct * 0.14)
+                );
+                $profileSignal = min(1.0, max(0.0, ($classicStageFit - 0.56) / 0.30));
+                $profileSignal = max($profileSignal, max(0.0, $punchProfile - 0.58) * 0.85);
+
+                if ($stageSubtype === 'sprint') {
+                    // Pure Tour sprints should reward classics engines for top-10 potential,
+                    // not turn leadout/puncheur profiles into repeat flat-stage favourites.
+                    $boostFactor = 1.0
+                        + (max(0.0, $sprintProfile - 0.62) * 0.10)
+                        + ($formSignal * 0.04)
+                        + ($historySignal * 0.05);
+                } else {
+                    $boostFactor = 1.0
+                        + ($stageSubtype === 'reduced_sprint' ? 0.30 : 0.08)
+                        + ($profileSignal * 0.45)
+                        + ($formSignal * 0.26)
+                        + ($historySignal * 0.36);
+                }
+
+                $floor = match ($stageSubtype) {
+                    'reduced_sprint', 'hilly', 'mixed' => min(0.075, 0.020 + $profileSignal * 0.030 + $formSignal * 0.018 + $historySignal * 0.020),
+                    'sprint' => min(0.040, 0.010 + max(0.0, $sprintProfile - 0.52) * 0.030 + $formSignal * 0.010 + $historySignal * 0.012),
+                    default => 0.0,
+                };
+
+                $top10Floor = match ($stageSubtype) {
+                    'reduced_sprint', 'hilly', 'mixed' => min(0.62, 0.30 + $profileSignal * 0.16 + $formSignal * 0.12 + $historySignal * 0.10),
+                    'sprint' => min(0.42, 0.18 + max(0.0, $sprintProfile - 0.52) * 0.16 + $formSignal * 0.08 + $historySignal * 0.06),
+                    default => 0.0,
+                };
+
+                if ($stageSubtype === 'sprint') {
+                    $sprintCap = ($sprintSpeciality < 0.30 && $oneDaySpeciality >= 0.70) ? 0.036 : 0.070;
+                    $newWin = min(max($newWin * $boostFactor, $floor), $sprintCap);
+                    $newTop10 = max($newTop10 * (1.0 + (($boostFactor - 1.0) * 0.22)), $top10Floor);
+                } else {
+                    $newWin = max($newWin * $boostFactor, $floor);
+                    $newTop10 = max($newTop10 * (1.0 + (($boostFactor - 1.0) * 0.28)), $top10Floor);
+                }
+                $featurePatch['grand_tour_classics_stage_boost'] = round($boostFactor, 4);
+            }
+
+            $newWin = max(0.0, min(1.0, $newWin));
+            $newTop10 = max(0.0, min(0.98, $newTop10));
+            if (abs($newWin - $currentWin) > 0.0001 || abs($newTop10 - $currentTop10) > 0.0001) {
+                $predictions[$index]['win_probability'] = $newWin;
+                $predictions[$index]['top10_probability'] = $newTop10;
+                if (!empty($featurePatch)) {
+                    $predictions[$index]['features'] = array_merge($features, $featurePatch);
+                }
+                $updated = true;
+            }
+        }
+
+        if (!$updated) {
+            return $predictions;
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
         }
 
         return $predictions;
