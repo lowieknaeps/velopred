@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v40"
+MODEL_VERSION = "v41"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -2929,6 +2929,97 @@ class VelopredPredictor:
 
         return profiles
 
+    def _default_stage_profiles(self) -> dict:
+        return {
+            "sprint": {"score": 25.0, "experience": 0.0},
+            "punch": {"score": 25.0, "experience": 0.0},
+            "climb": {"score": 25.0, "experience": 0.0},
+            "tt": {"score": 25.0, "experience": 0.0},
+        }
+
+    def _apply_rider_profile_floors(
+        self,
+        profiles: dict,
+        row: pd.Series,
+        avg_position=None,
+        avg_position_parcours=None,
+        current_year_avg_position=None,
+        current_year_avg_position_parcours=None,
+        top10_rate=None,
+    ) -> dict:
+        merged = self._default_stage_profiles()
+        for key, value in (profiles or {}).items():
+            if isinstance(value, dict):
+                merged[key] = {
+                    "score": float(value.get("score", merged.get(key, {}).get("score", 25.0)) or 25.0),
+                    "experience": float(value.get("experience", merged.get(key, {}).get("experience", 0.0)) or 0.0),
+                }
+
+        def spec(key: str) -> float:
+            try:
+                return float(np.clip(float(row.get(key) or 0.0) / 10000.0, 0.0, 1.0))
+            except Exception:
+                return 0.0
+
+        def norm_inverse(value, fallback: float = 25.0, neutral: float = 0.5) -> float:
+            try:
+                if value is None or pd.isna(value):
+                    return neutral
+                normalized = float(np.clip(float(value) / max(fallback, 1.0), 0.0, 1.0))
+                return 1.0 - normalized
+            except Exception:
+                return neutral
+
+        sprint = spec("pcs_speciality_sprint")
+        gc = spec("pcs_speciality_gc")
+        tt = spec("pcs_speciality_tt")
+        climber = spec("pcs_speciality_climber")
+        hills = spec("pcs_speciality_hills")
+        one_day = spec("pcs_speciality_one_day")
+
+        try:
+            career_points = max(0.0, float(row.get("career_points") or 0.0))
+        except Exception:
+            career_points = 0.0
+        career_elite = float(np.clip((career_points - 2500.0) / 14000.0, 0.0, 1.0))
+        performance = max(
+            norm_inverse(avg_position),
+            norm_inverse(avg_position_parcours),
+            norm_inverse(current_year_avg_position),
+            norm_inverse(current_year_avg_position_parcours),
+        )
+        top10_signal = 0.5
+        try:
+            if top10_rate is not None and not pd.isna(top10_rate):
+                top10_signal = float(np.clip(float(top10_rate) / 100.0, 0.0, 1.0))
+        except Exception:
+            top10_signal = 0.5
+
+        floors = {
+            "sprint": {
+                "score": 25.0 + 75.0 * min(1.0, sprint * 0.76 + hills * 0.08 + one_day * 0.06 + career_elite * 0.05 + performance * 0.03 + top10_signal * 0.02),
+                "experience": min(1.0, sprint * 0.70 + one_day * 0.10 + career_elite * 0.08 + top10_signal * 0.12),
+            },
+            "punch": {
+                "score": 25.0 + 75.0 * min(1.0, hills * 0.46 + one_day * 0.20 + climber * 0.13 + gc * 0.08 + career_elite * 0.07 + performance * 0.04 + top10_signal * 0.02),
+                "experience": min(1.0, hills * 0.42 + one_day * 0.22 + climber * 0.10 + gc * 0.08 + career_elite * 0.08 + top10_signal * 0.10),
+            },
+            "climb": {
+                "score": 25.0 + 75.0 * min(1.0, climber * 0.52 + gc * 0.22 + hills * 0.08 + career_elite * 0.10 + performance * 0.04 + top10_signal * 0.04),
+                "experience": min(1.0, climber * 0.45 + gc * 0.25 + career_elite * 0.15 + top10_signal * 0.15),
+            },
+            "tt": {
+                "score": 25.0 + 75.0 * min(1.0, tt * 0.68 + gc * 0.12 + career_elite * 0.08 + performance * 0.06 + top10_signal * 0.06),
+                "experience": min(1.0, tt * 0.62 + gc * 0.10 + career_elite * 0.12 + top10_signal * 0.16),
+            },
+        }
+
+        for key, floor in floors.items():
+            merged[key]["score"] = round(max(float(merged[key].get("score", 25.0)), float(floor["score"])), 2)
+            merged[key]["experience"] = round(max(float(merged[key].get("experience", 0.0)), float(floor["experience"])), 4)
+
+        return merged
+
     def _stage_profile_summary(self, df: pd.DataFrame, current_year: int) -> dict:
         if df.empty:
             return {"score": 25.0, "experience": 0.0}
@@ -3140,7 +3231,15 @@ class VelopredPredictor:
 
         parcours_results_count = int(len(parcours_df))
         stage_subtype_results_count = int(len(stage_subtype_df))
-        stage_profiles = self._compute_stage_profiles(all_prior, race_year)
+        stage_profiles = self._apply_rider_profile_floors(
+            self._compute_stage_profiles(all_prior, race_year),
+            row,
+            avg_pos,
+            avg_pos_parcours,
+            current_year_avg,
+            current_year_avg_parcours,
+            top10_rate,
+        )
 
         age = np.nan
         if pd.notna(row.get("date_of_birth")):

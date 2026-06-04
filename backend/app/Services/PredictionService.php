@@ -26,6 +26,7 @@ class PredictionService
      * @var array<string, array<string,int>>
      */
     private array $stageFavouriteCounts = [];
+    private array $stageFavouriteTeamCounts = [];
     const CURRENT_YEAR_BOOST = 3.0;  // huidig jaar: 3x gewicht
     const DECAY              = 0.45; // voor jaren daarvoor
     const MIN_YEAR           = 2019;
@@ -81,6 +82,7 @@ class PredictionService
     {
         Log::info("[Prediction] Start: {$race->name} {$race->year}");
         $this->stageFavouriteCounts = [];
+        $this->stageFavouriteTeamCounts = [];
 
         $riderIds = $this->getPredictionRiderIds($race);
 
@@ -163,6 +165,39 @@ class PredictionService
                 $race,
                 $context,
                 $featuresBySlug,
+                false,
+            );
+            $predictions = $this->applyTeamHierarchyAdjustments(
+                $predictions,
+                $race,
+                $slugToId,
+                $featuresBySlug,
+                $context['prediction_type'],
+            );
+            $predictions = $this->applyStageWinnerCapAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
+            $this->recordStageFavourite(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
+            $predictions = $this->applyProbabilityCalibration(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
+            $predictions = $this->applyTeamHierarchyAdjustments(
+                $predictions,
+                $race,
+                $slugToId,
+                $featuresBySlug,
+                $context['prediction_type'],
             );
             $savedRiderIds = [];
 
@@ -189,27 +224,9 @@ class PredictionService
 
                             $savedRiderIds[] = (int) $riderId;
 
-                            $rawWinProbability = (float) $pred['win_probability'];
-                            $rawTop10Probability = (float) $pred['top10_probability'];
-                            $calibrated = $this->calibration->calibrateProbabilities(
-                                $race,
-                                (int) $pred['predicted_position'],
-                                $rawWinProbability,
-                                $rawTop10Probability,
-                                (string) $context['prediction_type'],
-                                (int) ($context['stage_number'] ?? 0),
-                                $context['stage_subtype'] ?? null,
-                                $context['parcours_type'] ?? $race->parcours_type,
-                            );
-
-                            $featureSet = $featuresBySlug[$slug] ?? $pred['features'];
-                            if (is_array($featureSet)) {
-                                $featureSet['raw_win_probability'] = $rawWinProbability;
-                                $featureSet['raw_top10_probability'] = $rawTop10Probability;
-                                if ($calibrated['calibration']) {
-                                    $featureSet['probability_calibration'] = $calibrated['calibration'];
-                                }
-                            }
+                            $rawWinProbability = (float) ($pred['raw_win_probability'] ?? $pred['win_probability']);
+                            $rawTop10Probability = (float) ($pred['raw_top10_probability'] ?? $pred['top10_probability']);
+                            $featureSet = $pred['features'] ?? $featuresBySlug[$slug] ?? [];
 
                             $predictionRecord = Prediction::updateOrCreate(
                                 [
@@ -221,9 +238,9 @@ class PredictionService
                                 [
                                     'model_version' => $modelVersion,
                                     'predicted_position' => $pred['predicted_position'],
-                                    'top10_probability' => $calibrated['top10_probability'],
+                                    'top10_probability' => $pred['top10_probability'],
                                     'raw_top10_probability' => $rawTop10Probability,
-                                    'win_probability' => $calibrated['win_probability'],
+                                    'win_probability' => $pred['win_probability'],
                                     'raw_win_probability' => $rawWinProbability,
                                     'confidence_score' => $pred['confidence_score'],
                                     'features' => $featureSet,
@@ -448,11 +465,79 @@ class PredictionService
         });
     }
 
+    private function applyProbabilityCalibration(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        foreach ($predictions as $index => $pred) {
+            $slug = (string) ($pred['rider_slug'] ?? '');
+            $rawWinProbability = (float) ($pred['win_probability'] ?? 0.0);
+            $rawTop10Probability = (float) ($pred['top10_probability'] ?? 0.0);
+
+            $calibrated = $this->calibration->calibrateProbabilities(
+                $race,
+                (int) ($pred['predicted_position'] ?? ($index + 1)),
+                $rawWinProbability,
+                $rawTop10Probability,
+                (string) $context['prediction_type'],
+                (int) ($context['stage_number'] ?? 0),
+                $context['stage_subtype'] ?? null,
+                $context['parcours_type'] ?? $race->parcours_type,
+            );
+
+            $featureSet = $featuresBySlug[$slug] ?? $pred['features'] ?? [];
+            if (is_array($featureSet)) {
+                $featureSet['raw_win_probability'] = $rawWinProbability;
+                $featureSet['raw_top10_probability'] = $rawTop10Probability;
+                if ($calibrated['calibration']) {
+                    $featureSet['probability_calibration'] = $calibrated['calibration'];
+                }
+            }
+
+            $predictions[$index]['raw_win_probability'] = $rawWinProbability;
+            $predictions[$index]['raw_top10_probability'] = $rawTop10Probability;
+            $predictions[$index]['win_probability'] = (float) $calibrated['win_probability'];
+            $predictions[$index]['top10_probability'] = (float) $calibrated['top10_probability'];
+            $predictions[$index]['features'] = $featureSet;
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            $aConfidence = (float) ($a['confidence_score'] ?? 0.0);
+            $bConfidence = (float) ($b['confidence_score'] ?? 0.0);
+            if ($aConfidence !== $bConfidence) {
+                return $bConfidence <=> $aConfidence;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        return $predictions;
+    }
+
     private function applyStageDiversityAdjustments(
         array $predictions,
         Race $race,
         array $context,
         array $featuresBySlug,
+        bool $recordWinner = true,
     ): array {
         if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || count($predictions) < 2) {
             return $predictions;
@@ -467,6 +552,10 @@ class PredictionService
         $subtypeKey = $race->id . ':' . $stageSubtype;
         $globalCounts = $this->stageFavouriteCounts[$globalKey] ?? [];
         $subtypeCounts = $this->stageFavouriteCounts[$subtypeKey] ?? [];
+        $teamGlobalKey = $race->id . ':team:all';
+        $teamSubtypeKey = $race->id . ':team:' . $stageSubtype;
+        $teamGlobalCounts = $this->stageFavouriteTeamCounts[$teamGlobalKey] ?? [];
+        $teamSubtypeCounts = $this->stageFavouriteTeamCounts[$teamSubtypeKey] ?? [];
         $profile = match ($stageSubtype) {
             'sprint' => ['global_decay' => 0.80, 'subtype_decay' => 0.66, 'floor' => 0.36, 'force_after' => 2, 'required_ratio' => 1.18, 'required_gap' => 0.018],
             'reduced_sprint' => ['global_decay' => 0.78, 'subtype_decay' => 0.64, 'floor' => 0.34, 'force_after' => 2, 'required_ratio' => 1.20, 'required_gap' => 0.020],
@@ -477,6 +566,8 @@ class PredictionService
             'tt', 'ttt' => ['global_decay' => 0.88, 'subtype_decay' => 0.78, 'floor' => 0.48, 'force_after' => 3, 'required_ratio' => 1.12, 'required_gap' => 0.015],
             default => ['global_decay' => 0.76, 'subtype_decay' => 0.64, 'floor' => 0.28, 'force_after' => 2, 'required_ratio' => 1.22, 'required_gap' => 0.020],
         };
+        $teamGlobalDecay = in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) ? 0.76 : 0.84;
+        $teamSubtypeDecay = in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) ? 0.70 : 0.78;
 
         foreach ($predictions as $i => $pred) {
             $slug = (string) ($pred['rider_slug'] ?? '');
@@ -486,7 +577,10 @@ class PredictionService
 
             $prevGlobal = (int) ($globalCounts[$slug] ?? 0);
             $prevSubtype = (int) ($subtypeCounts[$slug] ?? 0);
-            if ($prevGlobal <= 0 && $prevSubtype <= 0) {
+            $teamName = trim((string) ($featuresBySlug[$slug]['team'] ?? ''));
+            $prevTeamGlobal = $teamName !== '' ? (int) ($teamGlobalCounts[$teamName] ?? 0) : 0;
+            $prevTeamSubtype = $teamName !== '' ? (int) ($teamSubtypeCounts[$teamName] ?? 0) : 0;
+            if ($prevGlobal <= 0 && $prevSubtype <= 0 && $prevTeamGlobal <= 1 && $prevTeamSubtype <= 0) {
                 continue;
             }
 
@@ -496,6 +590,12 @@ class PredictionService
             }
             if ($prevSubtype > 0) {
                 $factor *= pow($profile['subtype_decay'], $prevSubtype);
+            }
+            if ($prevTeamGlobal > 1) {
+                $factor *= pow($teamGlobalDecay, $prevTeamGlobal - 1);
+            }
+            if ($prevTeamSubtype > 0) {
+                $factor *= pow($teamSubtypeDecay, $prevTeamSubtype);
             }
             $factor = max($profile['floor'], $factor);
             $predictions[$i]['win_probability'] = max(0.0, min(1.0, (float) ($pred['win_probability'] ?? 0.0) * $factor));
@@ -578,16 +678,163 @@ class PredictionService
             }
         }
 
-        // Update favourite counts for next stages of the same subtype.
-        $winnerSlug = (string) ($predictions[0]['rider_slug'] ?? '');
-        if ($winnerSlug !== '') {
-            $globalCounts[$winnerSlug] = (int) ($globalCounts[$winnerSlug] ?? 0) + 1;
-            $subtypeCounts[$winnerSlug] = (int) ($subtypeCounts[$winnerSlug] ?? 0) + 1;
-            $this->stageFavouriteCounts[$globalKey] = $globalCounts;
-            $this->stageFavouriteCounts[$subtypeKey] = $subtypeCounts;
+        if ($recordWinner) {
+            $this->recordStageFavourite($predictions, $race, $context, $featuresBySlug);
         }
 
         return $predictions;
+    }
+
+    private function applyStageWinnerCapAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || count($predictions) < 2) {
+            return $predictions;
+        }
+
+        $topSlug = (string) ($predictions[0]['rider_slug'] ?? '');
+        if ($topSlug === '') {
+            return $predictions;
+        }
+
+        $stageSubtype = (string) ($context['stage_subtype'] ?? '');
+        $globalCounts = $this->stageFavouriteCounts[$race->id . ':all'] ?? [];
+        $teamGlobalCounts = $this->stageFavouriteTeamCounts[$race->id . ':team:all'] ?? [];
+        $topTeam = trim((string) ($featuresBySlug[$topSlug]['team'] ?? ''));
+        $topPrev = (int) ($globalCounts[$topSlug] ?? 0);
+        $teamPrev = $topTeam !== '' ? (int) ($teamGlobalCounts[$topTeam] ?? 0) : 0;
+
+        $riderMax = in_array($stageSubtype, ['tt', 'ttt'], true) ? 2 : 3;
+        $teamMax = 3;
+        $teamLimited = $topTeam !== '' && $teamPrev >= $teamMax;
+        $riderLimited = $topPrev >= $riderMax;
+        if (!$teamLimited && !$riderLimited) {
+            return $predictions;
+        }
+
+        if ($teamLimited) {
+            $teamPenalty = in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true) ? 0.48 : 0.58;
+            foreach ($predictions as $index => $prediction) {
+                $slug = (string) ($prediction['rider_slug'] ?? '');
+                $team = trim((string) ($featuresBySlug[$slug]['team'] ?? ''));
+                if ($team === $topTeam) {
+                    $predictions[$index]['win_probability'] = max(0.0, min(1.0, (float) ($prediction['win_probability'] ?? 0.0) * $teamPenalty));
+                    $predictions[$index]['top10_probability'] = max(0.0, min(1.0, (float) ($prediction['top10_probability'] ?? 0.0) * (0.92 + $teamPenalty * 0.08)));
+                }
+            }
+
+            $bestNonTeamWin = null;
+            foreach ($predictions as $prediction) {
+                $slug = (string) ($prediction['rider_slug'] ?? '');
+                $team = trim((string) ($featuresBySlug[$slug]['team'] ?? ''));
+                if ($team !== $topTeam) {
+                    $bestNonTeamWin = max((float) ($prediction['win_probability'] ?? 0.0), (float) ($bestNonTeamWin ?? 0.0));
+                }
+            }
+
+            if ($bestNonTeamWin !== null && $bestNonTeamWin > 0.0) {
+                $teamRank = 0;
+                foreach ($predictions as $index => $prediction) {
+                    $slug = (string) ($prediction['rider_slug'] ?? '');
+                    $team = trim((string) ($featuresBySlug[$slug]['team'] ?? ''));
+                    if ($team === $topTeam && (float) ($prediction['win_probability'] ?? 0.0) >= ($bestNonTeamWin * 0.92)) {
+                        $predictions[$index]['win_probability'] = max(0.0, $bestNonTeamWin * max(0.72, 0.90 - ($teamRank * 0.04)));
+                        $teamRank++;
+                    }
+                }
+            }
+        } else {
+            $candidateIndex = null;
+            foreach ($predictions as $index => $prediction) {
+                if ($index === 0) {
+                    continue;
+                }
+                if ((string) ($prediction['rider_slug'] ?? '') !== $topSlug) {
+                    $candidateIndex = $index;
+                    break;
+                }
+            }
+
+            if ($candidateIndex !== null) {
+                $candidateWin = (float) ($predictions[$candidateIndex]['win_probability'] ?? 0.0);
+                $topWin = (float) ($predictions[0]['win_probability'] ?? 0.0);
+                $targetTopWin = max(0.0, $candidateWin * 0.92);
+                if ($topWin > $targetTopWin) {
+                    $predictions[0]['win_probability'] = $targetTopWin;
+                    $topTop10 = (float) ($predictions[0]['top10_probability'] ?? 0.0);
+                    $predictions[0]['top10_probability'] = max(0.0, min(1.0, $topTop10 * 0.94));
+                }
+            }
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        return $predictions;
+    }
+
+    private function recordStageFavourite(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): void {
+        if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || empty($predictions)) {
+            return;
+        }
+
+        $stageSubtype = (string) ($context['stage_subtype'] ?? '');
+        if ($stageSubtype === '') {
+            return;
+        }
+
+        $winnerSlug = (string) ($predictions[0]['rider_slug'] ?? '');
+        if ($winnerSlug === '') {
+            return;
+        }
+
+        $globalKey = $race->id . ':all';
+        $subtypeKey = $race->id . ':' . $stageSubtype;
+        $globalCounts = $this->stageFavouriteCounts[$globalKey] ?? [];
+        $subtypeCounts = $this->stageFavouriteCounts[$subtypeKey] ?? [];
+        $globalCounts[$winnerSlug] = (int) ($globalCounts[$winnerSlug] ?? 0) + 1;
+        $subtypeCounts[$winnerSlug] = (int) ($subtypeCounts[$winnerSlug] ?? 0) + 1;
+        $this->stageFavouriteCounts[$globalKey] = $globalCounts;
+        $this->stageFavouriteCounts[$subtypeKey] = $subtypeCounts;
+
+        $winnerTeam = trim((string) ($featuresBySlug[$winnerSlug]['team'] ?? ''));
+        if ($winnerTeam === '') {
+            return;
+        }
+
+        $teamGlobalKey = $race->id . ':team:all';
+        $teamSubtypeKey = $race->id . ':team:' . $stageSubtype;
+        $teamGlobalCounts = $this->stageFavouriteTeamCounts[$teamGlobalKey] ?? [];
+        $teamSubtypeCounts = $this->stageFavouriteTeamCounts[$teamSubtypeKey] ?? [];
+        $teamGlobalCounts[$winnerTeam] = (int) ($teamGlobalCounts[$winnerTeam] ?? 0) + 1;
+        $teamSubtypeCounts[$winnerTeam] = (int) ($teamSubtypeCounts[$winnerTeam] ?? 0) + 1;
+        $this->stageFavouriteTeamCounts[$teamGlobalKey] = $teamGlobalCounts;
+        $this->stageFavouriteTeamCounts[$teamSubtypeKey] = $teamSubtypeCounts;
     }
 
     public function refreshRaceIfStale(Race $race): bool
@@ -773,6 +1020,7 @@ class PredictionService
             $pcsRanking = is_numeric($rider->pcs_ranking) && (int) $rider->pcs_ranking > 0 && (int) $rider->pcs_ranking <= 500
                 ? (int) $rider->pcs_ranking
                 : null;
+            $stageProfiles = $this->applyRiderProfileFloors($this->defaultStageProfiles(), $rider);
             return [
                 'rider_slug'              => $rider->pcs_slug,
                 'team'                   => $teamName,
@@ -825,14 +1073,14 @@ class PredictionService
                 'current_year_attack_momentum_rate_parcours' => null,
                 'current_year_avg_position_stage_subtype' => null,
                 'current_year_top10_rate_stage_subtype' => null,
-                'sprint_profile_score' => 25.0,
-                'punch_profile_score' => 25.0,
-                'climb_profile_score' => 25.0,
-                'tt_profile_score' => 25.0,
-                'sprint_profile_experience' => 0.0,
-                'punch_profile_experience' => 0.0,
-                'climb_profile_experience' => 0.0,
-                'tt_profile_experience' => 0.0,
+                'sprint_profile_score' => $stageProfiles['sprint']['score'],
+                'punch_profile_score' => $stageProfiles['punch']['score'],
+                'climb_profile_score' => $stageProfiles['climb']['score'],
+                'tt_profile_score' => $stageProfiles['tt']['score'],
+                'sprint_profile_experience' => $stageProfiles['sprint']['experience'],
+                'punch_profile_experience' => $stageProfiles['punch']['experience'],
+                'climb_profile_experience' => $stageProfiles['climb']['experience'],
+                'tt_profile_experience' => $stageProfiles['tt']['experience'],
                 'pcs_speciality_one_day' => $rider->pcs_speciality_one_day,
                 'pcs_speciality_gc' => $rider->pcs_speciality_gc,
                 'pcs_speciality_tt' => $rider->pcs_speciality_tt,
@@ -1120,7 +1368,15 @@ class PredictionService
             $age = $rider->age_approx;
         }
 
-        $stageProfiles = $this->computeStageProfiles($prior, $currentYear);
+        $stageProfiles = $this->applyRiderProfileFloors(
+            $this->computeStageProfiles($prior, $currentYear),
+            $rider,
+            $avgPos,
+            $avgPosParcours,
+            $currentYearAvgPosition,
+            $currentYearAvgPositionParcours,
+            $top10Rate,
+        );
         // PCS ranking is a "position" (lower is better). When it becomes absurdly high,
         // it's usually a parsing/availability issue; treat as missing so it doesn't
         // push elite riders down via field percentiles.
@@ -1684,6 +1940,72 @@ class PredictionService
             'ttt' => ['ttt', 'tt'],
             default => [$stageSubtype ?: 'mixed'],
         };
+    }
+
+    private function defaultStageProfiles(): array
+    {
+        return [
+            'sprint' => ['score' => 25.0, 'experience' => 0.0],
+            'punch' => ['score' => 25.0, 'experience' => 0.0],
+            'climb' => ['score' => 25.0, 'experience' => 0.0],
+            'tt' => ['score' => 25.0, 'experience' => 0.0],
+        ];
+    }
+
+    private function applyRiderProfileFloors(
+        array $profiles,
+        Rider $rider,
+        ?float $avgPosition = null,
+        ?float $avgPositionParcours = null,
+        ?float $currentYearAvgPosition = null,
+        ?float $currentYearAvgPositionParcours = null,
+        ?float $top10Rate = null,
+    ): array {
+        $profiles = array_replace_recursive($this->defaultStageProfiles(), $profiles);
+
+        $speciality = fn (mixed $value): float => min(1.0, max(0.0, (float) ($value ?? 0.0) / 10000.0));
+        $sprint = $speciality($rider->pcs_speciality_sprint);
+        $gc = $speciality($rider->pcs_speciality_gc);
+        $tt = $speciality($rider->pcs_speciality_tt);
+        $climber = $speciality($rider->pcs_speciality_climber);
+        $hills = $speciality($rider->pcs_speciality_hills);
+        $oneDay = $speciality($rider->pcs_speciality_one_day);
+
+        $careerPoints = max(0.0, (float) ($rider->career_points ?? 0.0));
+        $careerElite = min(1.0, max(0.0, ($careerPoints - 2500.0) / 14000.0));
+        $performance = max(
+            $this->normalizedMetricOrNeutral($avgPosition, 25.0, true, 0.5),
+            $this->normalizedMetricOrNeutral($avgPositionParcours, 25.0, true, 0.5),
+            $this->normalizedMetricOrNeutral($currentYearAvgPosition, 25.0, true, 0.5),
+            $this->normalizedMetricOrNeutral($currentYearAvgPositionParcours, 25.0, true, 0.5),
+        );
+        $top10Signal = is_numeric($top10Rate) ? min(1.0, max(0.0, (float) $top10Rate / 100.0)) : 0.5;
+
+        $floors = [
+            'sprint' => [
+                'score' => 25.0 + 75.0 * min(1.0, $sprint * 0.76 + $hills * 0.08 + $oneDay * 0.06 + $careerElite * 0.05 + $performance * 0.03 + $top10Signal * 0.02),
+                'experience' => min(1.0, $sprint * 0.70 + $oneDay * 0.10 + $careerElite * 0.08 + $top10Signal * 0.12),
+            ],
+            'punch' => [
+                'score' => 25.0 + 75.0 * min(1.0, $hills * 0.46 + $oneDay * 0.20 + $climber * 0.13 + $gc * 0.08 + $careerElite * 0.07 + $performance * 0.04 + $top10Signal * 0.02),
+                'experience' => min(1.0, $hills * 0.42 + $oneDay * 0.22 + $climber * 0.10 + $gc * 0.08 + $careerElite * 0.08 + $top10Signal * 0.10),
+            ],
+            'climb' => [
+                'score' => 25.0 + 75.0 * min(1.0, $climber * 0.52 + $gc * 0.22 + $hills * 0.08 + $careerElite * 0.10 + $performance * 0.04 + $top10Signal * 0.04),
+                'experience' => min(1.0, $climber * 0.45 + $gc * 0.25 + $careerElite * 0.15 + $top10Signal * 0.15),
+            ],
+            'tt' => [
+                'score' => 25.0 + 75.0 * min(1.0, $tt * 0.68 + $gc * 0.12 + $careerElite * 0.08 + $performance * 0.06 + $top10Signal * 0.06),
+                'experience' => min(1.0, $tt * 0.62 + $gc * 0.10 + $careerElite * 0.12 + $top10Signal * 0.16),
+            ],
+        ];
+
+        foreach ($floors as $key => $floor) {
+            $profiles[$key]['score'] = round(max((float) ($profiles[$key]['score'] ?? 25.0), $floor['score']), 2);
+            $profiles[$key]['experience'] = round(max((float) ($profiles[$key]['experience'] ?? 0.0), $floor['experience']), 4);
+        }
+
+        return $profiles;
     }
 
     private function computeStageProfiles(Collection $prior, int $currentYear): array
@@ -2635,7 +2957,7 @@ class PredictionService
         array $featuresBySlug,
         string $predictionType
     ): array {
-        if (!in_array($predictionType, ['result', 'gc'], true) || count($predictions) < 2 || $slugToId->isEmpty()) {
+        if (!in_array($predictionType, ['result', 'gc', 'stage'], true) || count($predictions) < 2 || $slugToId->isEmpty()) {
             return $predictions;
         }
 
@@ -2665,14 +2987,21 @@ class PredictionService
             $features = $featuresBySlug[$slug] ?? [];
             $riderId = (int) ($slugToId[$slug] ?? 0);
             $startlistOrder = $riderId > 0 ? $startlistOrdersByRiderId->get($riderId) : null;
-            $leaderScore = $predictionType === 'gc'
-                ? $this->intraTeamGcLeaderScore($features)
-                : $this->intraTeamLeaderScore($features);
+            $leaderScore = match ($predictionType) {
+                'gc' => $this->intraTeamGcLeaderScore($features),
+                'stage' => $this->intraTeamStageLeaderScore($features),
+                default => $this->intraTeamLeaderScore($features),
+            };
             $teamBuckets[$teamId][] = [
                 'index' => $index,
                 'slug' => $slug,
                 'startlist_order' => $useStartlistOrder && is_numeric($startlistOrder) ? (int) $startlistOrder : null,
                 'leader_score' => $leaderScore,
+                'career_points' => max(0.0, (float) ($features['career_points'] ?? 0.0)),
+                'gc_spec' => min(1.0, max(0.0, (float) ($features['pcs_speciality_gc'] ?? 0.0) / 10000.0)),
+                'climb_spec' => min(1.0, max(0.0, (float) ($features['pcs_speciality_climber'] ?? 0.0) / 10000.0)),
+                'stage_fit' => $this->stageProfileFitScore($features),
+                'stage_subtype' => (string) ($features['stage_subtype'] ?? ''),
                 'career_pct' => min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5))),
                 'pcs_pct' => min(1.0, max(0.0, (float) ($features['field_pct_pcs_ranking'] ?? 0.5))),
                 'uci_pct' => min(1.0, max(0.0, (float) ($features['field_pct_uci_ranking'] ?? 0.5))),
@@ -2734,17 +3063,32 @@ class PredictionService
                     && in_array($race->parcours_type, ['cobbled', 'classic', 'hilly'], true);
                 $orderGapTolerance = $isClassicOneDay ? -0.20 : -0.02;
                 $orderEligible = $hasOrderPriority && $gap >= $orderGapTolerance;
-                $leaderSuperElite = ((float) ($leader['career_pct'] ?? 0.5)) >= 0.985
+                $leaderSuperElite = (((float) ($leader['career_pct'] ?? 0.5)) >= 0.985
                     && ((float) ($leader['pcs_pct'] ?? 0.5)) >= 0.975
-                    && ((float) ($leader['uci_pct'] ?? 0.5)) >= 0.96;
+                    && ((float) ($leader['uci_pct'] ?? 0.5)) >= 0.96)
+                    || (
+                        ((float) ($leader['career_points'] ?? 0.0)) >= 12000.0
+                        && (((float) ($leader['gc_spec'] ?? 0.0)) >= 0.65 || ((float) ($leader['climb_spec'] ?? 0.0)) >= 0.80)
+                        && ((float) ($leader['recent_pct'] ?? 0.5)) >= 0.88
+                    );
                 $eliteGap = ((float) ($leader['career_pct'] ?? 0.5)) - ((float) ($member['career_pct'] ?? 0.5));
                 $leaderClearlyAboveTeammate = $eliteGap >= 0.04
                     || (((float) ($leader['leader_score'] ?? 0.0)) - ((float) ($member['leader_score'] ?? 0.0))) >= 0.08;
 
-                // For GC we don't trust startlist order; rely purely on leader_score gap.
+                // For GC/stages we don't trust startlist order; rely on role/fit gaps.
                 if ($predictionType === 'gc') {
                     $orderEligible = false;
                     if ($gap < 0.08) {
+                        continue;
+                    }
+                } elseif ($predictionType === 'stage') {
+                    $orderEligible = false;
+                    $stageSubtype = (string) ($leader['stage_subtype'] ?? '');
+                    $roleGapThreshold = in_array($stageSubtype, ['summit_finish', 'high_mountain'], true) ? 0.045 : 0.075;
+                    if ($leaderSuperElite && in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true)) {
+                        $roleGapThreshold -= 0.015;
+                    }
+                    if ($gap < $roleGapThreshold) {
                         continue;
                     }
                 } elseif (!$orderEligible && $gap < 0.10) {
@@ -2770,8 +3114,8 @@ class PredictionService
                         : min(0.08, max(0.02, $orderGap * 0.015)))
                     : 0.0;
                 $penaltyFactor = max(0.62, min(0.92, 1 - ($gap * 0.35) - $orderBoost));
-                if ($leaderSuperElite && $leaderClearlyAboveTeammate && ($orderEligible || $hasOrderPriority || !$leaderOrder || !$memberOrder)) {
-                    $penaltyFactor = min($penaltyFactor, $isClassicOneDay ? 0.58 : 0.64);
+                if ($leaderSuperElite && $leaderClearlyAboveTeammate && ($predictionType === 'stage' || $orderEligible || $hasOrderPriority || !$leaderOrder || !$memberOrder)) {
+                    $penaltyFactor = min($penaltyFactor, $predictionType === 'stage' ? 0.52 : ($isClassicOneDay ? 0.58 : 0.64));
                 }
                 $newMemberWin = max(0.0, min(1.0, $memberWin * $penaltyFactor));
                 $winTransfer = max(0.0, ($memberWin - $newMemberWin) * 0.8);
@@ -2790,8 +3134,8 @@ class PredictionService
                         $newMemberWin = max(0.0, $newMemberWin - ($winDelta * 0.9));
                     }
                 }
-                if ($leaderSuperElite && $leaderClearlyAboveTeammate && ($orderEligible || $hasOrderPriority || !$leaderOrder || !$memberOrder)) {
-                    $targetLeaderWin = $newMemberWin * ($isClassicOneDay ? 1.10 : 1.06);
+                if ($leaderSuperElite && $leaderClearlyAboveTeammate && ($predictionType === 'stage' || $orderEligible || $hasOrderPriority || !$leaderOrder || !$memberOrder)) {
+                    $targetLeaderWin = $newMemberWin * ($predictionType === 'stage' ? 1.12 : ($isClassicOneDay ? 1.10 : 1.06));
                     if ($newLeaderWin < $targetLeaderWin) {
                         $winDelta = $targetLeaderWin - $newLeaderWin;
                         $newLeaderWin = min(1.0, $targetLeaderWin);
@@ -2863,6 +3207,54 @@ class PredictionService
             $momentum * 0.04 +
             $closeFinish * 0.02
         );
+    }
+
+    private function intraTeamStageLeaderScore(array $features): float
+    {
+        $career = min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5)));
+        $recent = min(1.0, max(0.0, (float) ($features['field_pct_recent_form'] ?? 0.5)));
+        $season = min(1.0, max(0.0, (float) ($features['field_pct_season_form'] ?? 0.5)));
+        $course = min(1.0, max(0.0, (float) ($features['field_pct_course_fit'] ?? 0.5)));
+        $top10 = min(1.0, max(0.0, (float) ($features['field_pct_top10_rate'] ?? 0.5)));
+        $stageFit = $this->stageProfileFitScore($features);
+        $stageExperience = $this->stageProfileFitExperience($features);
+
+        $sprint = min(1.0, max(0.0, (float) ($features['pcs_speciality_sprint'] ?? 0.0) / 10000.0));
+        $gc = min(1.0, max(0.0, (float) ($features['pcs_speciality_gc'] ?? 0.0) / 10000.0));
+        $tt = min(1.0, max(0.0, (float) ($features['pcs_speciality_tt'] ?? 0.0) / 10000.0));
+        $climb = min(1.0, max(0.0, (float) ($features['pcs_speciality_climber'] ?? 0.0) / 10000.0));
+        $hills = min(1.0, max(0.0, (float) ($features['pcs_speciality_hills'] ?? 0.0) / 10000.0));
+        $oneDay = min(1.0, max(0.0, (float) ($features['pcs_speciality_one_day'] ?? 0.0) / 10000.0));
+        $stageSubtype = (string) ($features['stage_subtype'] ?? 'mixed');
+
+        $stageSpeciality = match ($stageSubtype) {
+            'sprint' => $sprint * 0.82 + $hills * 0.18,
+            'reduced_sprint' => $sprint * 0.50 + $hills * 0.50,
+            'summit_finish' => $climb * 0.70 + $hills * 0.30,
+            'high_mountain' => $climb * 0.90 + $hills * 0.10,
+            'tt' => $tt,
+            'ttt' => $tt * 0.60 + $gc * 0.40,
+            default => $oneDay * 0.42 + $hills * 0.33 + $climb * 0.15 + $sprint * 0.10,
+        };
+
+        $score = (
+            $stageFit * 0.30
+            + $stageSpeciality * 0.26
+            + $career * 0.16
+            + $season * 0.10
+            + $recent * 0.08
+            + $course * 0.05
+            + $top10 * 0.03
+            + $stageExperience * 0.02
+        );
+
+        $raceDays = max(1.0, (float) ($features['race_days'] ?? 1.0));
+        if ($raceDays >= 5.0 && in_array($stageSubtype, ['summit_finish', 'high_mountain', 'hilly', 'mixed'], true)) {
+            $gcCaptainSignal = $gc * 0.52 + $climb * 0.34 + $career * 0.14;
+            $score += max(0.0, $gcCaptainSignal - 0.70) * 0.18;
+        }
+
+        return min(1.0, max(0.0, $score));
     }
 
     private function applyClassicContenderMomentumAdjustments(
