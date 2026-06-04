@@ -24,13 +24,16 @@ export default function RacesShow({
     const previousRerunStatus = useRef('idle');
     const hasPredictions = predictions.length > 0;
     const extraGroups = predictionGroups.filter((group) => !group.is_primary);
+    const extraGroupKey = extraGroups.map((group) => group.key).join('|');
+    const defaultOpenGroups = (groups) =>
+        Object.fromEntries(groups.map((group, index) => [group.key, (group.key ?? '').startsWith('stage:') || index === 0]));
     const [openGroups, setOpenGroups] = useState(() =>
-        Object.fromEntries(extraGroups.map((group, index) => [group.key, index === 0]))
+        defaultOpenGroups(extraGroups)
     );
 
     useEffect(() => {
-        setOpenGroups(Object.fromEntries(extraGroups.map((group, index) => [group.key, index === 0])));
-    }, [race.slug, predictionGroups.length]);
+        setOpenGroups(defaultOpenGroups(extraGroups));
+    }, [race.slug, predictionGroups.length, extraGroupKey]);
 
     const toggleGroup = (key) => {
         setOpenGroups((prev) => ({
