@@ -150,9 +150,10 @@ class RaceSyncService
             return;
         }
 
+        $riders = $this->dedupeStartlistEntries($data['riders'] ?? []);
         $currentRiderIds = [];
 
-        foreach ($data['riders'] as $index => $entry) {
+        foreach ($riders as $index => $entry) {
             $rider = $this->riderSync->syncFromStartlistEntry($entry);
             $team  = Team::where('pcs_slug', $entry['team_slug'])->first();
             $currentRiderIds[] = $rider->id;
@@ -176,10 +177,47 @@ class RaceSyncService
 
         $race->forceFill(['startlist_synced_at' => now()])->save();
 
-        Log::info("[RaceSync] Startlijst gesynchroniseerd: " . count($data['riders']) . " renners");
+        Log::info("[RaceSync] Startlijst gesynchroniseerd: " . count($riders) . " renners");
     }
 
     // ── Stap 3: Resultaten ────────────────────────────────────────────────────
+
+    private function dedupeStartlistEntries(array $entries): array
+    {
+        $grouped = [];
+        foreach ($entries as $entry) {
+            $teamSlug = (string) ($entry['team_slug'] ?? '');
+            $grouped[$teamSlug][] = $entry;
+        }
+
+        $deduped = [];
+        foreach ($grouped as $teamEntries) {
+            $allHaveBib = collect($teamEntries)->every(
+                fn (array $entry) => isset($entry['rider_number']) && $entry['rider_number'] !== null && $entry['rider_number'] !== ''
+            );
+
+            if (!$allHaveBib) {
+                array_push($deduped, ...$teamEntries);
+                continue;
+            }
+
+            $byBib = [];
+            $order = [];
+            foreach ($teamEntries as $entry) {
+                $bib = (string) $entry['rider_number'];
+                if (!array_key_exists($bib, $byBib)) {
+                    $order[] = $bib;
+                }
+                $byBib[$bib] = $entry;
+            }
+
+            foreach ($order as $bib) {
+                $deduped[] = $byBib[$bib];
+            }
+        }
+
+        return $deduped;
+    }
 
     private function syncResults(Race $race): void
     {

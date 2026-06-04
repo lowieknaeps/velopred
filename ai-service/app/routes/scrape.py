@@ -30,6 +30,33 @@ from app.scraper import (
 router = APIRouter(prefix="/scrape", tags=["scrape"])
 
 
+def _dedupe_startlist_riders(riders: list[dict]) -> list[dict]:
+    """
+    PCS startlists can contain reserve/dropout rows alongside the active rider.
+    In practice those rows often duplicate the bib number inside the same team.
+    Keep only the last row per team+bib so replacements survive and stale rows drop out.
+    """
+    deduped_riders: list[dict] = []
+    riders_by_team: dict[str, list[dict]] = {}
+    for rider in riders:
+        riders_by_team.setdefault(rider["team_slug"], []).append(rider)
+
+    for team_rows in riders_by_team.values():
+        if all(row.get("rider_number") is not None for row in team_rows):
+            by_bib: dict[int, dict] = {}
+            order: list[int] = []
+            for row in team_rows:
+                bib = int(row["rider_number"])
+                if bib not in by_bib:
+                    order.append(bib)
+                by_bib[bib] = row
+            deduped_riders.extend(by_bib[bib] for bib in order)
+        else:
+            deduped_riders.extend(team_rows)
+
+    return deduped_riders
+
+
 def _stage_name(stage: Stage) -> str | None:
     """Leid een bruikbare etappenaam af voor subtype-detectie."""
     page_title = stage.html.css_first(".page-title")
@@ -235,20 +262,22 @@ def scrape_startlist(slug: str, year: int):
         html = fetch(path)
         sl = RaceStartlist(path, html=html, update_html=False)
 
+        riders = [
+            {
+                "rider_slug": slug_from_url(r["rider_url"]),
+                "rider_name": r["rider_name"],
+                "nationality": r["nationality"],
+                "rider_number": r.get("rider_number"),
+                "team_slug": slug_from_url(r["team_url"]),
+                "team_name": r["team_name"],
+            }
+            for r in sl.startlist()
+        ]
+
         return {
             "race_slug": slug,
             "year": year,
-            "riders": [
-                {
-                    "rider_slug": slug_from_url(r["rider_url"]),
-                    "rider_name": r["rider_name"],
-                    "nationality": r["nationality"],
-                    "rider_number": r.get("rider_number"),
-                    "team_slug": slug_from_url(r["team_url"]),
-                    "team_name": r["team_name"],
-                }
-                for r in sl.startlist()
-            ],
+            "riders": _dedupe_startlist_riders(riders),
         }
     except (ValueError, ExpectedParsingError) as e:
         raise HTTPException(status_code=404, detail=f"Startlijst niet gevonden: {e}")

@@ -567,7 +567,7 @@ class RaceController extends Controller
                 $oldWin = (float) ($baselineBySlug[$slug]['win_probability'] ?? 0.0);
                 $newWin = (float) ($currentBySlug[$slug]['win_probability'] ?? 0.0);
 
-                return abs($newWin - $oldWin) >= 0.2;
+                return abs($newWin - $oldWin) >= 0.1;
             })
             ->count();
 

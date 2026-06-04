@@ -191,18 +191,16 @@ class PredictionService
 
                             $rawWinProbability = (float) $pred['win_probability'];
                             $rawTop10Probability = (float) $pred['top10_probability'];
-                            $calibrated = $context['prediction_type'] === 'result' && $race->isOneDay()
-                                ? $this->calibration->calibrateOneDayResultProbabilities(
-                                    $race,
-                                    (int) $pred['predicted_position'],
-                                    $rawWinProbability,
-                                    $rawTop10Probability,
-                                )
-                                : [
-                                    'win_probability' => $rawWinProbability,
-                                    'top10_probability' => $rawTop10Probability,
-                                    'calibration' => null,
-                                ];
+                            $calibrated = $this->calibration->calibrateProbabilities(
+                                $race,
+                                (int) $pred['predicted_position'],
+                                $rawWinProbability,
+                                $rawTop10Probability,
+                                (string) $context['prediction_type'],
+                                (int) ($context['stage_number'] ?? 0),
+                                $context['stage_subtype'] ?? null,
+                                $context['parcours_type'] ?? $race->parcours_type,
+                            );
 
                             $featureSet = $featuresBySlug[$slug] ?? $pred['features'];
                             if (is_array($featureSet)) {
@@ -465,22 +463,41 @@ class PredictionService
             return $predictions;
         }
 
-        // Only apply to sprint-like stages where the repetition artifact is most visible.
-        if (!in_array($stageSubtype, ['sprint', 'reduced_sprint'], true)) {
-            return $predictions;
-        }
-
-        $raceKey = $race->id . ':' . $stageSubtype;
-        $counts = $this->stageFavouriteCounts[$raceKey] ?? [];
+        $globalKey = $race->id . ':all';
+        $subtypeKey = $race->id . ':' . $stageSubtype;
+        $globalCounts = $this->stageFavouriteCounts[$globalKey] ?? [];
+        $subtypeCounts = $this->stageFavouriteCounts[$subtypeKey] ?? [];
+        $profile = match ($stageSubtype) {
+            'sprint' => ['global_decay' => 0.80, 'subtype_decay' => 0.66, 'floor' => 0.36, 'force_after' => 2, 'required_ratio' => 1.18, 'required_gap' => 0.018],
+            'reduced_sprint' => ['global_decay' => 0.78, 'subtype_decay' => 0.64, 'floor' => 0.34, 'force_after' => 2, 'required_ratio' => 1.20, 'required_gap' => 0.020],
+            'summit_finish' => ['global_decay' => 0.66, 'subtype_decay' => 0.54, 'floor' => 0.18, 'force_after' => 1, 'required_ratio' => 1.32, 'required_gap' => 0.028],
+            'high_mountain' => ['global_decay' => 0.62, 'subtype_decay' => 0.50, 'floor' => 0.16, 'force_after' => 1, 'required_ratio' => 1.36, 'required_gap' => 0.032],
+            'hilly' => ['global_decay' => 0.70, 'subtype_decay' => 0.58, 'floor' => 0.22, 'force_after' => 1, 'required_ratio' => 1.28, 'required_gap' => 0.024],
+            'mixed' => ['global_decay' => 0.68, 'subtype_decay' => 0.56, 'floor' => 0.20, 'force_after' => 1, 'required_ratio' => 1.30, 'required_gap' => 0.026],
+            'tt', 'ttt' => ['global_decay' => 0.88, 'subtype_decay' => 0.78, 'floor' => 0.48, 'force_after' => 3, 'required_ratio' => 1.12, 'required_gap' => 0.015],
+            default => ['global_decay' => 0.76, 'subtype_decay' => 0.64, 'floor' => 0.28, 'force_after' => 2, 'required_ratio' => 1.22, 'required_gap' => 0.020],
+        };
 
         foreach ($predictions as $i => $pred) {
             $slug = (string) ($pred['rider_slug'] ?? '');
-            if ($slug === '' || !isset($counts[$slug]) || $counts[$slug] <= 0) {
+            if ($slug === '') {
                 continue;
             }
 
-            $prev = (int) $counts[$slug];
-            $factor = max(0.40, pow(0.70, $prev));
+            $prevGlobal = (int) ($globalCounts[$slug] ?? 0);
+            $prevSubtype = (int) ($subtypeCounts[$slug] ?? 0);
+            if ($prevGlobal <= 0 && $prevSubtype <= 0) {
+                continue;
+            }
+
+            $factor = 1.0;
+            if ($prevGlobal > 0) {
+                $factor *= pow($profile['global_decay'], $prevGlobal);
+            }
+            if ($prevSubtype > 0) {
+                $factor *= pow($profile['subtype_decay'], $prevSubtype);
+            }
+            $factor = max($profile['floor'], $factor);
             $predictions[$i]['win_probability'] = max(0.0, min(1.0, (float) ($pred['win_probability'] ?? 0.0) * $factor));
             $predictions[$i]['top10_probability'] = max(0.0, min(1.0, (float) ($pred['top10_probability'] ?? 0.0) * (0.92 + ($factor * 0.08))));
         }
@@ -506,11 +523,68 @@ class PredictionService
             $predictions[$index]['predicted_position'] = $index + 1;
         }
 
+        // In etappekoersen mag dezelfde renner alleen opnieuw topfavoriet blijven
+        // als hij na de repeat-penalty nog duidelijk dominant is.
+        $topSlug = (string) ($predictions[0]['rider_slug'] ?? '');
+        $topPrevGlobal = (int) ($globalCounts[$topSlug] ?? 0);
+        if (
+            $topSlug !== ''
+            && $topPrevGlobal >= (int) $profile['force_after']
+            && isset($predictions[1])
+        ) {
+            $topWin = (float) ($predictions[0]['win_probability'] ?? 0.0);
+            $secondWin = (float) ($predictions[1]['win_probability'] ?? 0.0);
+            $requiredRatio = max(1.05, (float) $profile['required_ratio'] - max(0, $topPrevGlobal - (int) $profile['force_after']) * 0.05);
+            $requiredGap = max(0.008, (float) $profile['required_gap'] - max(0, $topPrevGlobal - (int) $profile['force_after']) * 0.003);
+            $isClearlyDominant = $secondWin <= 0.0
+                || ($topWin >= ($secondWin * $requiredRatio) && ($topWin - $secondWin) >= $requiredGap);
+
+            if (!$isClearlyDominant) {
+                $transfer = min(
+                    max(0.0, ($topWin - $secondWin + 0.0015) / 2.0),
+                    max(0.0, $topWin * 0.22)
+                );
+
+                if ($transfer > 0.0) {
+                    $predictions[0]['win_probability'] = max(0.0, $topWin - $transfer);
+                    $predictions[1]['win_probability'] = min(1.0, $secondWin + $transfer);
+
+                    $topTop10 = (float) ($predictions[0]['top10_probability'] ?? 0.0);
+                    $secondTop10 = (float) ($predictions[1]['top10_probability'] ?? 0.0);
+                    $top10Transfer = min(max(0.0, ($topTop10 - $secondTop10) / 2.5), $topTop10 * 0.08);
+                    $predictions[0]['top10_probability'] = max(0.0, $topTop10 - $top10Transfer);
+                    $predictions[1]['top10_probability'] = min(1.0, $secondTop10 + $top10Transfer);
+                }
+
+                usort($predictions, function (array $a, array $b) {
+                    $aWin = (float) ($a['win_probability'] ?? 0.0);
+                    $bWin = (float) ($b['win_probability'] ?? 0.0);
+                    if ($aWin !== $bWin) {
+                        return $bWin <=> $aWin;
+                    }
+
+                    $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+                    $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+                    if ($aTop10 !== $bTop10) {
+                        return $bTop10 <=> $aTop10;
+                    }
+
+                    return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+                });
+
+                foreach ($predictions as $index => $prediction) {
+                    $predictions[$index]['predicted_position'] = $index + 1;
+                }
+            }
+        }
+
         // Update favourite counts for next stages of the same subtype.
         $winnerSlug = (string) ($predictions[0]['rider_slug'] ?? '');
         if ($winnerSlug !== '') {
-            $counts[$winnerSlug] = (int) ($counts[$winnerSlug] ?? 0) + 1;
-            $this->stageFavouriteCounts[$raceKey] = $counts;
+            $globalCounts[$winnerSlug] = (int) ($globalCounts[$winnerSlug] ?? 0) + 1;
+            $subtypeCounts[$winnerSlug] = (int) ($subtypeCounts[$winnerSlug] ?? 0) + 1;
+            $this->stageFavouriteCounts[$globalKey] = $globalCounts;
+            $this->stageFavouriteCounts[$subtypeKey] = $subtypeCounts;
         }
 
         return $predictions;

@@ -393,7 +393,7 @@ class VelopredPredictor:
         return ["result", "stage", "gc", "points", "kom", "youth"]
 
     def _category_weight(self, category: str | None) -> float:
-        value = (category or "").lower()
+        value = str(category).lower() if category not in (None, "") and not pd.isna(category) else ""
 
         if "grand tour" in value:
             return CATEGORY_WEIGHTS["grand-tour"]
@@ -943,10 +943,49 @@ class VelopredPredictor:
 
         return df
 
-    def _training_sample_weight(self, race_year: int, latest_year: int, category_weight: float) -> float:
+    def _training_sample_weight(
+        self,
+        race_year: int,
+        latest_year: int,
+        category_weight: float,
+        prediction_type: str | None = None,
+        stage_subtype: str | None = None,
+        parcours_type: str | None = None,
+        race_days: float | None = None,
+    ) -> float:
         years_ago = max(0, latest_year - int(race_year))
         recency_weight = 1.0 if years_ago == 0 else (0.8 if years_ago == 1 else max(0.35, 0.8 ** years_ago))
-        return float(recency_weight * max(0.75, min(category_weight, 1.35)))
+        base_weight = float(recency_weight * max(0.75, min(category_weight, 1.35)))
+
+        prediction_key = str(prediction_type).lower() if prediction_type not in (None, "") and not pd.isna(prediction_type) else ""
+        if prediction_key != "stage":
+            return base_weight
+
+        subtype = str(stage_subtype).lower() if stage_subtype not in (None, "") and not pd.isna(stage_subtype) else ""
+        stage_weight = 1.0
+        if subtype in {"sprint", "reduced_sprint", "tt", "ttt"}:
+            stage_weight = 1.35
+        elif subtype in {"mixed", "hilly"}:
+            stage_weight = 1.15
+        elif subtype in {"summit_finish", "high_mountain"}:
+            stage_weight = 0.92
+
+        is_multi_day = False
+        try:
+            is_multi_day = float(race_days or 0.0) >= 5.0
+        except (TypeError, ValueError):
+            is_multi_day = False
+
+        parcours_key = str(parcours_type).lower() if parcours_type not in (None, "") and not pd.isna(parcours_type) else ""
+
+        if (
+            is_multi_day
+            and parcours_key == "mountain"
+            and subtype in {"sprint", "reduced_sprint", "tt", "ttt", "mixed", "hilly"}
+        ):
+            stage_weight += 0.12
+
+        return float(base_weight * min(stage_weight, 1.6))
 
     def _weighted_cv_mae(self, model_factory, X, y, sample_weights, use_scaled: bool = True) -> float:
         if len(y) > CV_MAX_SAMPLES:
@@ -1062,7 +1101,15 @@ class VelopredPredictor:
             X = df[feature_cols].copy()
             y = df["position"]
             sample_weights = df.apply(
-                lambda row: self._training_sample_weight(row["race_year"], latest_year, row["category_weight"]),
+                lambda row: self._training_sample_weight(
+                    row["race_year"],
+                    latest_year,
+                    row["category_weight"],
+                    row.get("prediction_type"),
+                    row.get("stage_subtype"),
+                    row.get("parcours_type"),
+                    row.get("race_days"),
+                ),
                 axis=1,
             )
             medians = {}
@@ -1167,6 +1214,10 @@ class VelopredPredictor:
                     int(row.get("race_year", latest_year)),
                     latest_year,
                     float(row.get("category_weight", 1.0) or 1.0),
+                    row.get("prediction_type"),
+                    row.get("stage_subtype"),
+                    row.get("parcours_type"),
+                    row.get("race_days"),
                 ),
                 axis=1,
             )
@@ -1432,8 +1483,8 @@ class VelopredPredictor:
                 subtype_multiplier = {
                     "sprint": 1.9,
                     "reduced_sprint": 1.55,
-                    "summit_finish": 1.6,
-                    "high_mountain": 1.8,
+                    "summit_finish": 1.45,
+                    "high_mountain": 1.55,
                     "tt": 1.7,
                     "ttt": 1.4,
                 }.get(stage_subtype, 1.2)
@@ -1517,6 +1568,26 @@ class VelopredPredictor:
                     if stage_subtype_results_count >= 18 and avg_stage_subtype not in (None, "") and float(avg_stage_subtype) > 22.0:
                         stage_role_penalty += 4.0
                 elif stage_subtype in {"summit_finish", "high_mountain"}:
+                    career_pct = min(1.0, max(0.0, float(rider.get("field_pct_career_points", 0.5) or 0.5)))
+                    season_dom = min(1.0, max(0.0, float(rider.get("season_dominance_score", 50.0) or 50.0) / 100.0))
+                    current_year_results = float(rider.get("current_year_results_count", 0) or 0)
+                    elite_mountain_bonus = max(0.0, career_pct - 0.86) * 4.5
+                    elite_mountain_bonus += max(0.0, season_dom - 0.62) * 6.0
+                    elite_mountain_bonus += max(0.0, speciality_gc_pct[idx] - 0.72) * 3.5
+                    elite_mountain_bonus += max(0.0, speciality_climb_pct[idx] - 0.74) * 4.5
+
+                    breakout_penalty = 0.0
+                    if stage_subtype_results_count < 10:
+                        breakout_penalty += max(0.0, 10.0 - stage_subtype_results_count) * 0.18
+                    if current_year_results < 8:
+                        breakout_penalty += max(0.0, 8.0 - current_year_results) * 0.12
+                    if current_year_avg_stage_subtype not in (None, "") and stage_subtype_results_count < 8:
+                        breakout_penalty += max(0.0, 8.0 - float(current_year_avg_stage_subtype)) * 0.18
+                    if current_year_top10_stage_subtype >= 70 and stage_subtype_results_count < 8:
+                        breakout_penalty += (min(current_year_top10_stage_subtype, 100.0) - 70.0) * 0.025
+
+                    subtype_bonus += elite_mountain_bonus
+                    subtype_bonus -= breakout_penalty
                     stage_role_penalty += max(0.0, 0.58 - stage_profile_fit) * 8.0
                     stage_role_penalty += max(0.0, 0.25 - stage_profile_exp) * 3.0
                     stage_role_penalty += max(0.0, 0.68 - stage_speciality_fit) * 18.0
@@ -1525,9 +1596,35 @@ class VelopredPredictor:
                         stage_role_penalty += max(0.0, 0.60 - climb_profile_fit) * 16.0
                         stage_role_penalty += max(0.0, 0.62 - speciality_climb_pct[idx]) * 26.0
                         stage_role_penalty += max(0.0, speciality_sprint_pct[idx] - speciality_climb_pct[idx]) * 8.0
+                        if race_days >= 5 and current_year_results < 8 and career_pct < 0.88:
+                            stage_role_penalty += max(0.0, 8.0 - current_year_results) * 0.75
                     else:
                         stage_role_penalty += max(0.0, 0.56 - climb_profile_fit) * 12.0
                         stage_role_penalty += max(0.0, 0.58 - speciality_climb_pct[idx]) * 18.0
+                        if race_days >= 5 and current_year_results < 7 and career_pct < 0.86:
+                            stage_role_penalty += max(0.0, 7.0 - current_year_results) * 0.55
+                elif stage_subtype in {"mixed", "hilly"}:
+                    race_days = float(rider.get("race_days", 1) or 1)
+                    gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+                    hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
+                    sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+
+                    stage_role_penalty += max(0.0, 0.55 - stage_profile_fit) * 10.0
+                    stage_role_penalty += max(0.0, 0.64 - stage_speciality_fit) * 14.0
+                    stage_role_penalty += max(0.0, 0.48 - speciality_hills_pct[idx]) * 10.0
+
+                    # Op niet-berg etappes in rittenkoersen willen we niet dat pure GC/klimprofielen
+                    # systematisch de top van de daguitslag domineren zonder passend punch/sprintprofiel.
+                    if race_days >= 5:
+                        stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.76) * max(0.0, 0.58 - speciality_hills_pct[idx]) * 36.0
+                        stage_role_penalty += max(0.0, speciality_gc_pct[idx] - 0.72) * max(0.0, 0.54 - sprint_profile_fit) * 28.0
+                        stage_role_penalty += max(0.0, speciality_climb_pct[idx] - 0.74) * max(0.0, 0.56 - speciality_hills_pct[idx]) * 22.0
+
+                        if gc_raw >= 0.70 and climb_raw >= 0.70 and hills_raw < 0.60:
+                            stage_role_penalty += (gc_raw - 0.70) * 38.0 + (climb_raw - 0.70) * 30.0 + (0.60 - hills_raw) * 32.0
+                        if gc_raw >= 0.72 and sprint_raw < 0.46:
+                            stage_role_penalty += (gc_raw - 0.72) * 26.0 + (0.46 - sprint_raw) * 26.0
                 elif stage_subtype in {"tt", "ttt"}:
                     stage_role_penalty += max(0.0, 0.55 - stage_profile_fit) * 10.0
                     stage_role_penalty += max(0.0, 0.20 - stage_profile_exp) * 2.5
@@ -2191,6 +2288,48 @@ class VelopredPredictor:
                     if pcs_top_rank_value is not None and pcs_top_rank_value <= 2.0:
                         adjusted_scores[idx] -= (2.0 - pcs_top_rank_value) * 2.0 + 2.0
 
+        # Team hierarchy metadata for stage races:
+        # detect clear captains per team so we can apply a soft probability cap later.
+        team_captain_meta: dict[str, tuple[int, float]] = {}
+        if prediction_type in {"gc", "stage"} and race_days_value >= 5 and "team" in df.columns:
+            team_names = df["team"].fillna("").astype(str).to_list()
+            career_points_pct = self._percentile_scores([r.get("career_points") for r in riders], inverse=False)
+            team_to_indices: dict[str, list[int]] = {}
+            for idx, tname in enumerate(team_names):
+                if tname:
+                    team_to_indices.setdefault(tname, []).append(idx)
+
+            for _, idxs in team_to_indices.items():
+                if len(idxs) < 2:
+                    continue
+
+                leader_idx = None
+                leader_strength = -1.0
+                team_strengths: dict[int, float] = {}
+                for idx in idxs:
+                    gc_raw = float(riders[idx].get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    climb_raw = float(riders[idx].get("pcs_speciality_climber", 0) or 0) / 10000.0
+                    strength = gc_raw * 0.62 + climb_raw * 0.38 + career_points_pct[idx] * 0.22
+                    team_strengths[idx] = strength
+                    if strength > leader_strength:
+                        leader_strength = strength
+                        leader_idx = idx
+
+                if leader_idx is None:
+                    continue
+
+                sorted_strengths = sorted(team_strengths.values(), reverse=True)
+                second_strength = sorted_strengths[1] if len(sorted_strengths) > 1 else -1.0
+                leader_gap = leader_strength - second_strength
+
+                # Only apply when there is a clear captain signal.
+                if leader_strength < 0.70 or leader_gap < 0.08:
+                    continue
+
+                team_name = team_names[leader_idx]
+                if team_name:
+                    team_captain_meta[team_name] = (int(leader_idx), float(leader_gap))
+
         order    = np.argsort(adjusted_scores)
         if (
             prediction_type == "result"
@@ -2351,6 +2490,95 @@ class VelopredPredictor:
             new_probs = new_probs / max(1e-9, float(new_probs.sum()))
             win_probs = new_probs
 
+        # Soft team-captain cap for multi-day races:
+        # teammates can still score high/win stages, but should usually not outrank
+        # a clear captain in GC-like contexts.
+        if team_captain_meta and prediction_type in {"gc", "stage"} and race_days_value >= 5 and "team" in df.columns:
+            team_names = df["team"].fillna("").astype(str).to_list()
+            total_removed = 0.0
+            for idx, tname in enumerate(team_names):
+                if not tname or tname not in team_captain_meta:
+                    continue
+
+                captain_idx, leader_gap = team_captain_meta[tname]
+                if idx == captain_idx:
+                    continue
+
+                # Do not force this for pure sprint/TT contexts.
+                if prediction_type == "stage" and stage_subtype in {"sprint", "tt", "ttt"}:
+                    continue
+
+                rider_gc_raw = float(riders[idx].get("pcs_speciality_gc", 0) or 0) / 10000.0
+                rider_climb_raw = float(riders[idx].get("pcs_speciality_climber", 0) or 0) / 10000.0
+                rider_sprint_raw = float(riders[idx].get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                rider_role_gc = rider_gc_raw * 0.60 + rider_climb_raw * 0.40
+                if rider_role_gc < 0.62:
+                    continue
+
+                base_ratio = 0.72 if prediction_type == "gc" else 0.82
+                if prediction_type == "stage" and stage_subtype in {"summit_finish", "high_mountain"}:
+                    # In GC-like mountain stages a domestique can still podium,
+                    # but should rarely outrank a clear team leader.
+                    base_ratio = 0.68
+                # If captain signal is less decisive, allow more overlap.
+                cap_ratio = min(0.95, base_ratio + max(0.0, 0.14 - leader_gap) * 0.45)
+                if rider_sprint_raw >= 0.65 and prediction_type == "stage":
+                    cap_ratio = min(0.97, cap_ratio + 0.05)
+
+                # Stronger cap when both riders are GC/climbing profiles in a stage race.
+                if (
+                    prediction_type == "stage"
+                    and stage_subtype in {"summit_finish", "high_mountain", "mixed", "hilly"}
+                    and rider_gc_raw >= 0.68
+                    and rider_climb_raw >= 0.68
+                ):
+                    cap_ratio = min(cap_ratio, 0.62 if stage_subtype in {"summit_finish", "high_mountain"} else 0.72)
+
+                captain_prob = float(win_probs[captain_idx])
+                cap_value = captain_prob * cap_ratio
+                if float(win_probs[idx]) > cap_value:
+                    removed = float(win_probs[idx] - cap_value)
+                    win_probs[idx] = cap_value
+                    total_removed += removed
+
+            if total_removed > 0.0:
+                # Redistribute removed probability across the rest of the field.
+                keep_mask = np.ones(len(win_probs), dtype=bool)
+                denom = float(win_probs[keep_mask].sum())
+                if denom > 0:
+                    win_probs[keep_mask] += (win_probs[keep_mask] / denom) * total_removed
+                win_probs = win_probs / max(1e-9, float(win_probs.sum()))
+
+            # Pairwise captain dominance in GC-like stage contexts:
+            # keep domestiques competitive, but if they drift above the captain,
+            # transfer just enough probability back to restore captain > helper.
+            if prediction_type == "stage" and stage_subtype in {"summit_finish", "high_mountain", "mixed", "hilly"}:
+                for idx, tname in enumerate(team_names):
+                    if not tname or tname not in team_captain_meta:
+                        continue
+                    captain_idx, leader_gap = team_captain_meta[tname]
+                    if idx == captain_idx or leader_gap < 0.08:
+                        continue
+
+                    rider_gc_raw = float(riders[idx].get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    rider_climb_raw = float(riders[idx].get("pcs_speciality_climber", 0) or 0) / 10000.0
+                    rider_role_gc = rider_gc_raw * 0.60 + rider_climb_raw * 0.40
+                    if rider_role_gc < 0.66:
+                        continue
+
+                    captain_prob = float(win_probs[captain_idx])
+                    teammate_prob = float(win_probs[idx])
+                    if teammate_prob <= captain_prob:
+                        continue
+
+                    target_gap = 0.0015 if stage_subtype in {"summit_finish", "high_mountain"} else 0.0010
+                    transfer = min(teammate_prob * 0.35, (teammate_prob - captain_prob + target_gap) / 2.0)
+                    if transfer > 0.0:
+                        win_probs[idx] -= transfer
+                        win_probs[captain_idx] += transfer
+
+                win_probs = win_probs / max(1e-9, float(win_probs.sum()))
+
         max_cap = {
             "stage": {
                 "sprint": 0.34,
@@ -2458,6 +2686,45 @@ class VelopredPredictor:
         recalibrated_win_probs = np.zeros_like(win_probs)
         recalibrated_win_probs[order] = ordered_win_probs
         win_probs = recalibrated_win_probs
+
+        # Final ranking should follow the calibrated win probabilities, not the
+        # earlier raw score order. This is especially important after captain/team
+        # post-processing where probabilities may be adjusted late in the flow.
+        order = np.argsort(-win_probs)
+
+        if team_captain_meta and prediction_type == "stage" and race_days_value >= 5 and "team" in df.columns:
+            team_names = df["team"].fillna("").astype(str).to_list()
+            if stage_subtype in {"summit_finish", "high_mountain", "mixed", "hilly"}:
+                order_list = [int(i) for i in order]
+                order_pos = {idx: pos for pos, idx in enumerate(order_list)}
+
+                for idx, tname in enumerate(team_names):
+                    if not tname or tname not in team_captain_meta:
+                        continue
+                    captain_idx, leader_gap = team_captain_meta[tname]
+                    if idx == captain_idx or leader_gap < 0.08:
+                        continue
+
+                    rider_gc_raw = float(riders[idx].get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    rider_climb_raw = float(riders[idx].get("pcs_speciality_climber", 0) or 0) / 10000.0
+                    rider_role_gc = rider_gc_raw * 0.60 + rider_climb_raw * 0.40
+                    if rider_role_gc < 0.66:
+                        continue
+
+                    captain_prob = float(win_probs[captain_idx])
+                    teammate_prob = float(win_probs[idx])
+                    if teammate_prob <= captain_prob:
+                        continue
+
+                    captain_pos = order_pos.get(captain_idx)
+                    teammate_pos = order_pos.get(idx)
+                    if captain_pos is None or teammate_pos is None or teammate_pos > captain_pos:
+                        continue
+
+                    order_list[captain_pos], order_list[teammate_pos] = order_list[teammate_pos], order_list[captain_pos]
+                    order_pos[captain_idx], order_pos[idx] = teammate_pos, captain_pos
+
+                order = np.array(order_list, dtype=int)
 
         top10_probs = np.exp(-np.arange(n) * 0.08) * 0.85
         top10_probs = np.clip(top10_probs, 0.02, 0.95)

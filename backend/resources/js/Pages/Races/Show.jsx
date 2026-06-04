@@ -198,7 +198,7 @@ export default function RacesShow({
                                                 ? hasZeroChangeSummary
                                                     ? rerunChangeSummary?.model_version_changed
                                                         ? 'Herberekening succesvol. Modelversie vernieuwd, maar top-10 output bleef gelijk.'
-                                                        : 'Herberekening succesvol, maar geen nieuwe data sinds vorige run (0 wijzigingen).'
+                                                        : 'Herberekening succesvol, maar de zichtbare top-10 in deze context bleef gelijk.'
                                                     : 'Herberekening klaar. Wijzigingen hieronder zichtbaar.'
                                                 : rerunStatus === 'failed'
                                                   ? 'Herberekening duurde te lang. Probeer opnieuw.'
