@@ -32,9 +32,9 @@ router = APIRouter(prefix="/scrape", tags=["scrape"])
 
 def _dedupe_startlist_riders(riders: list[dict]) -> list[dict]:
     """
-    PCS startlists can contain reserve/dropout rows alongside the active rider.
+    PCS startlists can contain hidden reserve/dropout rows alongside the active rider.
     In practice those rows often duplicate the bib number inside the same team.
-    Keep only the last row per team+bib so replacements survive and stale rows drop out.
+    Keep the first visible row per team+bib and ignore later duplicates.
     """
     deduped_riders: list[dict] = []
     riders_by_team: dict[str, list[dict]] = {}
@@ -49,7 +49,7 @@ def _dedupe_startlist_riders(riders: list[dict]) -> list[dict]:
                 bib = int(row["rider_number"])
                 if bib not in by_bib:
                     order.append(bib)
-                by_bib[bib] = row
+                    by_bib[bib] = row
             deduped_riders.extend(by_bib[bib] for bib in order)
         else:
             deduped_riders.extend(team_rows)

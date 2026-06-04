@@ -207,8 +207,8 @@ class RaceSyncService
                 $bib = (string) $entry['rider_number'];
                 if (!array_key_exists($bib, $byBib)) {
                     $order[] = $bib;
+                    $byBib[$bib] = $entry;
                 }
-                $byBib[$bib] = $entry;
             }
 
             foreach ($order as $bib) {
