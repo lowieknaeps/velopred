@@ -192,6 +192,12 @@ class PredictionService
                 $context,
                 $featuresBySlug,
             );
+            $predictions = $this->applyTeamTimeTrialGroupingAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
             $this->recordStageFavourite(
                 $predictions,
                 $race,
@@ -210,6 +216,12 @@ class PredictionService
                 $slugToId,
                 $featuresBySlug,
                 $context['prediction_type'],
+            );
+            $predictions = $this->applyTeamTimeTrialGroupingAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
             );
             $savedRiderIds = [];
 
@@ -542,6 +554,194 @@ class PredictionService
         }
 
         return $predictions;
+    }
+
+    private function applyTeamTimeTrialGroupingAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (
+            ($context['prediction_type'] ?? '') !== 'stage'
+            || (string) ($context['stage_subtype'] ?? '') !== 'ttt'
+            || !$race->isStageRace()
+            || count($predictions) < 2
+        ) {
+            return $predictions;
+        }
+
+        $teamBuckets = [];
+        $unassigned = [];
+
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            $featureSet = $featuresBySlug[$slug] ?? ($prediction['features'] ?? []);
+            if (!is_array($featureSet)) {
+                $featureSet = [];
+            }
+
+            $team = trim((string) ($featureSet['team'] ?? ''));
+            if ($team === '' && isset($prediction['features']) && is_array($prediction['features'])) {
+                $team = trim((string) ($prediction['features']['team'] ?? ''));
+            }
+
+            $position = (int) ($prediction['predicted_position'] ?? ($index + 1));
+            $win = max(0.0, min(1.0, (float) ($prediction['win_probability'] ?? 0.0)));
+            $top10 = max(0.0, min(1.0, (float) ($prediction['top10_probability'] ?? 0.0)));
+            $ttSpeciality = min(1.0, max(0.0, (float) ($featureSet['pcs_speciality_tt'] ?? 0.0) / 10000.0));
+            $ttProfile = min(1.0, max(0.0, (float) ($featureSet['tt_profile_score'] ?? 25.0) / 100.0));
+            $careerPct = min(1.0, max(0.0, (float) ($featureSet['field_pct_career_points'] ?? 0.5)));
+            $seasonPct = min(1.0, max(0.0, (float) ($featureSet['field_pct_season_form'] ?? 0.5)));
+            $teamShare = min(1.0, max(0.0, (float) ($featureSet['team_career_points_share'] ?? 0.0)));
+            $stageFit = $this->stageProfileFitScore($featureSet);
+            $memberStrength = (
+                $win * 3.5
+                + $top10 * 0.9
+                + $stageFit * 0.45
+                + $ttSpeciality * 0.35
+                + $ttProfile * 0.25
+                + $careerPct * 0.18
+                + $seasonPct * 0.12
+            );
+
+            $member = [
+                'index' => $index,
+                'prediction' => $prediction,
+                'features' => $featureSet,
+                'original_position' => max(1, $position),
+                'win' => $win,
+                'top10' => $top10,
+                'team_share' => $teamShare,
+                'member_strength' => $memberStrength,
+            ];
+
+            if ($team === '') {
+                $unassigned[] = $member;
+                continue;
+            }
+
+            if (!isset($teamBuckets[$team])) {
+                $teamBuckets[$team] = [
+                    'team' => $team,
+                    'members' => [],
+                ];
+            }
+            $teamBuckets[$team]['members'][] = $member;
+        }
+
+        if (count($teamBuckets) < 2) {
+            return $predictions;
+        }
+
+        foreach ($teamBuckets as $team => $bucket) {
+            $membersByStrength = $bucket['members'];
+            usort($membersByStrength, function (array $a, array $b) {
+                $scoreCmp = $b['member_strength'] <=> $a['member_strength'];
+                if ($scoreCmp !== 0) {
+                    return $scoreCmp;
+                }
+
+                return $a['original_position'] <=> $b['original_position'];
+            });
+
+            $scoredMembers = array_slice($membersByStrength, 0, max(1, min(5, count($membersByStrength))));
+            $scoredCount = max(1, count($scoredMembers));
+            $avgWin = array_sum(array_map(fn (array $m) => $m['win'], $scoredMembers)) / $scoredCount;
+            $avgTop10 = array_sum(array_map(fn (array $m) => $m['top10'], $scoredMembers)) / $scoredCount;
+            $avgStrength = array_sum(array_map(fn (array $m) => $m['member_strength'], $scoredMembers)) / $scoredCount;
+            $maxWin = max(array_map(fn (array $m) => $m['win'], $bucket['members']));
+            $maxTop10 = max(array_map(fn (array $m) => $m['top10'], $bucket['members']));
+            $teamShare = max(array_map(fn (array $m) => $m['team_share'], $bucket['members']));
+            $bestPosition = min(array_map(fn (array $m) => $m['original_position'], $bucket['members']));
+            $bestPositionScore = 1.0 / max(1, $bestPosition);
+
+            usort($bucket['members'], function (array $a, array $b) {
+                return $a['original_position'] <=> $b['original_position'];
+            });
+
+            $teamBuckets[$team] = [
+                ...$bucket,
+                'team_score' => (
+                    $avgWin * 4.0
+                    + $maxWin * 2.3
+                    + $avgTop10 * 0.65
+                    + $avgStrength * 0.55
+                    + $teamShare * 0.30
+                    + $bestPositionScore * 0.05
+                ),
+                'team_win_probability' => max(0.0001, min(0.95, max($maxWin, $avgWin * 1.3))),
+                'team_top10_probability' => max(0.0001, min(0.98, max($maxTop10, $avgTop10))),
+                'best_position' => $bestPosition,
+            ];
+        }
+
+        usort($teamBuckets, function (array $a, array $b) {
+            $scoreCmp = $b['team_score'] <=> $a['team_score'];
+            if ($scoreCmp !== 0) {
+                return $scoreCmp;
+            }
+
+            return $a['best_position'] <=> $b['best_position'];
+        });
+
+        usort($unassigned, function (array $a, array $b) {
+            return $a['original_position'] <=> $b['original_position'];
+        });
+
+        $ranked = [];
+        $position = 1;
+        $previousTeamWin = null;
+        $previousTeamTop10 = null;
+
+        foreach ($teamBuckets as $teamRank => $bucket) {
+            $teamWin = (float) $bucket['team_win_probability'];
+            $teamTop10 = (float) $bucket['team_top10_probability'];
+
+            if ($previousTeamWin !== null && $teamWin >= $previousTeamWin) {
+                $teamWin = max(0.0001, $previousTeamWin * 0.88);
+            }
+            if ($previousTeamTop10 !== null && $teamTop10 >= $previousTeamTop10) {
+                $teamTop10 = max(0.0001, $previousTeamTop10 * 0.94);
+            }
+
+            foreach ($bucket['members'] as $memberRank => $member) {
+                $prediction = $member['prediction'];
+                $featureSet = $member['features'];
+
+                if (!array_key_exists('raw_win_probability', $prediction)) {
+                    $prediction['raw_win_probability'] = (float) ($prediction['win_probability'] ?? 0.0);
+                }
+                if (!array_key_exists('raw_top10_probability', $prediction)) {
+                    $prediction['raw_top10_probability'] = (float) ($prediction['top10_probability'] ?? 0.0);
+                }
+
+                $memberEpsilon = $memberRank * 0.000001;
+                $prediction['predicted_position'] = $position++;
+                $prediction['win_probability'] = max(0.0001, $teamWin - $memberEpsilon);
+                $prediction['top10_probability'] = max(0.0001, $teamTop10 - $memberEpsilon);
+
+                $featureSet['team_time_trial_grouped'] = true;
+                $featureSet['team_time_trial_team_rank'] = $teamRank + 1;
+                $featureSet['team_time_trial_team'] = $bucket['team'];
+                $featureSet['team_time_trial_team_win_probability'] = round($teamWin, 6);
+                $featureSet['team_time_trial_original_position'] = $member['original_position'];
+                $prediction['features'] = $featureSet;
+
+                $ranked[] = $prediction;
+            }
+
+            $previousTeamWin = $teamWin;
+            $previousTeamTop10 = $teamTop10;
+        }
+
+        foreach ($unassigned as $member) {
+            $prediction = $member['prediction'];
+            $prediction['predicted_position'] = $position++;
+            $ranked[] = $prediction;
+        }
+
+        return $ranked;
     }
 
     private function applyStageDiversityAdjustments(
