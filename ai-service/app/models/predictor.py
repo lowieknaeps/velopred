@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v46"
+MODEL_VERSION = "v47"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -2353,6 +2353,38 @@ class VelopredPredictor:
                 # (This is the "Pogacar > Vingegaard by default" rule without hardcoding names.)
                 if wins_this_race >= 3 and world_gc >= 0.62 and career_points_pct[idx] >= 0.78:
                     adjusted_scores[idx] -= 6.0 + (wins_this_race - 2.0) * 2.0
+
+                recent_pct = float(rider.get("field_pct_recent_form", 0.5) or 0.5)
+                season_pct = float(rider.get("field_pct_season_form", 0.5) or 0.5)
+                current_year_avg_value = None if rider.get("current_year_avg_position") in (None, "") else float(rider.get("current_year_avg_position"))
+                current_year_top10_value = float(rider.get("current_year_top10_rate", 0.0) or 0.0)
+                wins_current_year = float(rider.get("wins_current_year", 0.0) or 0.0)
+                avg_signal = 0.5 if current_year_avg_value is None else float(np.clip((8.0 - current_year_avg_value) / 8.0, 0.0, 1.0))
+                form_signal = float(np.clip(
+                    recent_pct * 0.30
+                    + season_pct * 0.25
+                    + avg_signal * 0.22
+                    + min(1.0, current_year_top10_value / 100.0) * 0.13
+                    + min(1.0, wins_current_year / 6.0) * 0.10,
+                    0.0,
+                    1.0,
+                ))
+
+                # Grand Tour GC anchor: when two contenders are both in elite form,
+                # the proven GC/climb/career profile must outweigh noisy win counts
+                # from smaller/current-season contexts.
+                gc_anchor = float(np.clip(
+                    gc_raw * 0.30
+                    + climb_raw * 0.32
+                    + career_points_pct[idx] * 0.22
+                    + form_signal * 0.12
+                    + float(rider.get("pcs_speciality_tt", 0) or 0) / 10000.0 * 0.04,
+                    0.0,
+                    1.0,
+                ))
+                if gc_anchor >= 0.78 and form_signal >= 0.84:
+                    adjusted_scores[idx] -= (gc_anchor - 0.74) * 42.0
+                    adjusted_scores[idx] -= max(0.0, career_points_pct[idx] - 0.88) * 8.0
 
         # One-week mountain stage races GC: still apply a lighter "elite GC" prior.
         # These races are often decided in the mountains with short TTs, so world_gc

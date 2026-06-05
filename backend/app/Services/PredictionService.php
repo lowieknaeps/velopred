@@ -166,6 +166,12 @@ class PredictionService
                 $context,
                 $featuresBySlug,
             );
+            $predictions = $this->applyGrandTourGcHierarchyAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
             $predictions = $this->applyStageDiversityAdjustments(
                 $predictions,
                 $race,
@@ -1775,6 +1781,146 @@ class PredictionService
         if (!$updated) {
             return $predictions;
         }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        return $predictions;
+    }
+
+    private function applyGrandTourGcHierarchyAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (($context['prediction_type'] ?? '') !== 'gc' || !$race->isStageRace() || count($predictions) < 2) {
+            return $predictions;
+        }
+
+        $raceDays = max(1, $race->start_date->diffInDays($race->end_date) + 1);
+        if ($raceDays < 18) {
+            return $predictions;
+        }
+
+        $profiles = [];
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            $features = $slug !== '' ? ($featuresBySlug[$slug] ?? null) : null;
+            if (!is_array($features)) {
+                continue;
+            }
+
+            $gc = min(1.0, max(0.0, (float) ($features['pcs_speciality_gc'] ?? 0.0) / 10000.0));
+            $climb = min(1.0, max(0.0, (float) ($features['pcs_speciality_climber'] ?? 0.0) / 10000.0));
+            $tt = min(1.0, max(0.0, (float) ($features['pcs_speciality_tt'] ?? 0.0) / 10000.0));
+            $careerPct = isset($features['field_pct_career_points']) && is_numeric($features['field_pct_career_points'])
+                ? min(1.0, max(0.0, (float) $features['field_pct_career_points']))
+                : min(1.0, max(0.0, (float) ($features['career_points'] ?? 0.0) / 25000.0));
+            $recentPct = min(1.0, max(0.0, (float) ($features['field_pct_recent_form'] ?? 0.5)));
+            $seasonPct = min(1.0, max(0.0, (float) ($features['field_pct_season_form'] ?? 0.5)));
+            $currentYearAvg = isset($features['current_year_avg_position']) && is_numeric($features['current_year_avg_position'])
+                ? (float) $features['current_year_avg_position']
+                : null;
+            $avgSignal = $currentYearAvg === null ? 0.5 : min(1.0, max(0.0, (8.0 - $currentYearAvg) / 8.0));
+            $currentYearTop10 = min(100.0, max(0.0, (float) ($features['current_year_top10_rate'] ?? 0.0)));
+            $winsCurrentYear = max(0.0, (float) ($features['wins_current_year'] ?? 0.0));
+
+            $formSignal = min(1.0, max(0.0,
+                $recentPct * 0.30
+                + $seasonPct * 0.25
+                + $avgSignal * 0.22
+                + min(1.0, $currentYearTop10 / 100.0) * 0.13
+                + min(1.0, $winsCurrentYear / 6.0) * 0.10
+            ));
+            $anchor = min(1.0, max(0.0,
+                $gc * 0.30
+                + $climb * 0.32
+                + $careerPct * 0.22
+                + $formSignal * 0.12
+                + $tt * 0.04
+            ));
+
+            $profiles[$index] = [
+                'anchor' => $anchor,
+                'form' => $formSignal,
+                'slug' => $slug,
+                'features' => $features,
+            ];
+        }
+
+        if (empty($profiles) || !isset($profiles[0])) {
+            return $predictions;
+        }
+
+        $bestIndex = array_key_first($profiles);
+        foreach ($profiles as $index => $profile) {
+            if (
+                $profile['anchor'] > ($profiles[$bestIndex]['anchor'] ?? 0.0)
+                || (
+                    abs($profile['anchor'] - ($profiles[$bestIndex]['anchor'] ?? 0.0)) < 0.0001
+                    && $profile['form'] > ($profiles[$bestIndex]['form'] ?? 0.0)
+                )
+            ) {
+                $bestIndex = $index;
+            }
+        }
+
+        if ($bestIndex === 0) {
+            return $predictions;
+        }
+
+        $topProfile = $profiles[0];
+        $bestProfile = $profiles[$bestIndex];
+        $anchorGap = $bestProfile['anchor'] - $topProfile['anchor'];
+        $formGap = $topProfile['form'] - $bestProfile['form'];
+        if (
+            $bestProfile['anchor'] < 0.78
+            || $bestProfile['form'] < 0.84
+            || $anchorGap < 0.09
+            || $formGap > 0.13
+        ) {
+            return $predictions;
+        }
+
+        $topWin = (float) ($predictions[0]['win_probability'] ?? 0.0);
+        $bestWin = (float) ($predictions[$bestIndex]['win_probability'] ?? 0.0);
+        $gapBoost = max(0.014, min(0.045, $anchorGap * 0.22));
+        $targetBestWin = min(0.52, max($bestWin, $topWin + $gapBoost));
+        $topReduction = min($topWin * 0.22, max(0.0, ($targetBestWin - $bestWin) * 0.35));
+
+        $predictions[$bestIndex]['win_probability'] = $targetBestWin;
+        $predictions[$bestIndex]['top10_probability'] = max(
+            (float) ($predictions[$bestIndex]['top10_probability'] ?? 0.0),
+            min(0.98, (float) ($predictions[0]['top10_probability'] ?? 0.0) + 0.01)
+        );
+        $predictions[$bestIndex]['features'] = array_merge($bestProfile['features'], [
+            'grand_tour_gc_anchor_score' => round($bestProfile['anchor'], 4),
+            'grand_tour_gc_anchor_form' => round($bestProfile['form'], 4),
+        ]);
+
+        $predictions[0]['win_probability'] = max(0.0, $topWin - $topReduction);
+        $predictions[0]['features'] = array_merge($topProfile['features'], [
+            'grand_tour_gc_anchor_score' => round($topProfile['anchor'], 4),
+            'grand_tour_gc_anchor_form' => round($topProfile['form'], 4),
+        ]);
 
         usort($predictions, function (array $a, array $b) {
             $aWin = (float) ($a['win_probability'] ?? 0.0);
