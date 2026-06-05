@@ -588,7 +588,8 @@ class PredictionService
             return $predictions;
         }
 
-        $updated = false;
+        $metricsByIndex = [];
+        $pureSprintReceiverIndexes = [];
         foreach ($predictions as $index => $prediction) {
             $slug = (string) ($prediction['rider_slug'] ?? '');
             $features = $slug !== '' ? ($featuresBySlug[$slug] ?? ($prediction['features'] ?? null)) : null;
@@ -607,6 +608,56 @@ class PredictionService
             $gcRole = ($gc * 0.56) + ($climb * 0.34) + (min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5))) * 0.10);
             $sprintFinishFit = max($sprint, $sprintProfile * 0.78);
             $punchFinishFit = max($hills * 0.82 + $oneDay * 0.18, $punchProfile, $stageFit);
+            $seasonPct = min(1.0, max(0.0, (float) ($features['field_pct_season_form'] ?? 0.5)));
+            $recentPct = min(1.0, max(0.0, (float) ($features['field_pct_recent_form'] ?? 0.5)));
+            $reliablePoorForm = min(1.0, max(0.0, (float) ($features['reliable_poor_form'] ?? 0.0)));
+            $poorFormSignal = min(1.0, $reliablePoorForm + max(0.0, 0.36 - $seasonPct) + max(0.0, 0.34 - $recentPct));
+
+            $metricsByIndex[$index] = [
+                'features' => $features,
+                'sprint' => $sprint,
+                'gc' => $gc,
+                'climb' => $climb,
+                'hills' => $hills,
+                'one_day' => $oneDay,
+                'sprint_profile' => $sprintProfile,
+                'punch_profile' => $punchProfile,
+                'stage_fit' => $stageFit,
+                'gc_role' => $gcRole,
+                'sprint_finish_fit' => $sprintFinishFit,
+                'punch_finish_fit' => $punchFinishFit,
+                'season_pct' => $seasonPct,
+                'recent_pct' => $recentPct,
+                'poor_form_signal' => $poorFormSignal,
+            ];
+
+            if (
+                $stageSubtype === 'sprint'
+                && $sprint >= 0.40
+                && $gc < 0.45
+                && $climb < 0.45
+                && $poorFormSignal < 0.65
+            ) {
+                $pureSprintReceiverIndexes[] = $index;
+            }
+        }
+
+        $updated = false;
+        $removedWinProbability = 0.0;
+        foreach ($predictions as $index => $prediction) {
+            $metrics = $metricsByIndex[$index] ?? null;
+            if ($metrics === null) {
+                continue;
+            }
+
+            $features = $metrics['features'];
+            $sprint = (float) $metrics['sprint'];
+            $hills = (float) $metrics['hills'];
+            $oneDay = (float) $metrics['one_day'];
+            $sprintProfile = (float) $metrics['sprint_profile'];
+            $gcRole = (float) $metrics['gc_role'];
+            $sprintFinishFit = (float) $metrics['sprint_finish_fit'];
+            $punchFinishFit = (float) $metrics['punch_finish_fit'];
 
             $winCap = null;
             $top10Cap = null;
@@ -622,6 +673,22 @@ class PredictionService
                 $winCap = max(0.0035, 0.018 - ($severity * 0.013));
                 $top10Cap = max(0.12, 0.32 - ($severity * 0.18));
                 $reason = 'pure_sprint_gc_conservation';
+            } elseif (
+                $stageSubtype === 'sprint'
+                && !empty($pureSprintReceiverIndexes)
+                && $gcRole < 0.64
+                && $sprint < 0.36
+                && ($oneDay >= 0.45 || $hills >= 0.38 || $sprintProfile >= 0.62)
+            ) {
+                // In een pure massasprint horen klassiekerprofielen achter echte sprinters.
+                $profileAllowance = min(
+                    0.003,
+                    max(0.0, $hills - 0.38) * 0.006
+                    + max(0.0, $oneDay - 0.45) * 0.004
+                );
+                $winCap = max(0.014, 0.014 + ($sprint * 0.030) + $profileAllowance);
+                $top10Cap = max(0.36, min(0.70, 0.44 + ($sprint * 0.45) + min(0.09, $hills * 0.08)));
+                $reason = 'pure_sprint_classics_ceiling';
             } elseif (
                 $stageSubtype === 'reduced_sprint'
                 && $gcRole >= 0.68
@@ -648,6 +715,7 @@ class PredictionService
                 continue;
             }
 
+            $removedWinProbability += max(0.0, $currentWin - $newWin);
             $featurePatch = array_merge($features, [
                 'sprint_stage_role_cap' => $reason,
                 'sprint_stage_role_gc_score' => round($gcRole, 4),
@@ -661,6 +729,88 @@ class PredictionService
             $predictions[$index]['top10_probability'] = max(0.0, $newTop10);
             $predictions[$index]['features'] = $featurePatch;
             $updated = true;
+        }
+
+        if ($stageSubtype === 'sprint' && $removedWinProbability > 0.0 && !empty($pureSprintReceiverIndexes)) {
+            $receiverWeights = [];
+            foreach ($pureSprintReceiverIndexes as $receiverIndex) {
+                $metrics = $metricsByIndex[$receiverIndex] ?? null;
+                if ($metrics === null || !isset($predictions[$receiverIndex])) {
+                    continue;
+                }
+
+                $receiverWeights[$receiverIndex] = max(
+                    0.0001,
+                    (float) ($predictions[$receiverIndex]['win_probability'] ?? 0.0)
+                    + ((float) $metrics['sprint'] * 0.018)
+                    + ((float) $metrics['sprint_profile'] * 0.006)
+                    + ((float) $metrics['season_pct'] * 0.004)
+                    - ((float) $metrics['poor_form_signal'] * 0.012)
+                );
+            }
+
+            $weightSum = array_sum($receiverWeights);
+            if ($weightSum > 0.0) {
+                foreach ($receiverWeights as $receiverIndex => $weight) {
+                    $boost = $removedWinProbability * ($weight / $weightSum);
+                    $metrics = $metricsByIndex[$receiverIndex];
+                    $features = $metrics['features'];
+                    $specialistFloor = min(
+                        0.080,
+                        max(
+                            0.018,
+                            0.0235
+                            + max(0.0, (float) $metrics['sprint'] - 0.40) * 0.070
+                            + max(0.0, (float) $metrics['sprint_profile'] - 0.68) * 0.012
+                            - ((float) $metrics['poor_form_signal'] * 0.016)
+                        )
+                    );
+                    $features['pure_sprint_specialist_boost'] = round($boost, 6);
+                    $features['pure_sprint_specialist_score'] = round((float) $metrics['sprint'], 4);
+                    $features['pure_sprint_specialist_floor'] = round($specialistFloor, 4);
+
+                    $predictions[$receiverIndex]['win_probability'] = min(
+                        0.95,
+                        max(
+                            (float) ($predictions[$receiverIndex]['win_probability'] ?? 0.0) + $boost,
+                            $specialistFloor
+                        )
+                    );
+                    $predictions[$receiverIndex]['features'] = $features;
+                    $updated = true;
+                }
+            }
+        }
+
+        if ($stageSubtype === 'sprint' && !empty($pureSprintReceiverIndexes)) {
+            foreach ($pureSprintReceiverIndexes as $receiverIndex) {
+                $metrics = $metricsByIndex[$receiverIndex] ?? null;
+                if ($metrics === null || !isset($predictions[$receiverIndex])) {
+                    continue;
+                }
+
+                $specialistFloor = min(
+                    0.080,
+                    max(
+                        0.018,
+                        0.0235
+                        + max(0.0, (float) $metrics['sprint'] - 0.40) * 0.070
+                        + max(0.0, (float) $metrics['sprint_profile'] - 0.68) * 0.012
+                        - ((float) $metrics['poor_form_signal'] * 0.016)
+                    )
+                );
+                $currentWin = (float) ($predictions[$receiverIndex]['win_probability'] ?? 0.0);
+                if ($currentWin + 0.0001 >= $specialistFloor) {
+                    continue;
+                }
+
+                $features = $metrics['features'];
+                $features['pure_sprint_specialist_floor'] = round($specialistFloor, 4);
+                $features['pure_sprint_specialist_score'] = round((float) $metrics['sprint'], 4);
+                $predictions[$receiverIndex]['win_probability'] = $specialistFloor;
+                $predictions[$receiverIndex]['features'] = $features;
+                $updated = true;
+            }
         }
 
         if (!$updated) {

@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v48"
+MODEL_VERSION = "v49"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -2809,6 +2809,27 @@ class VelopredPredictor:
         if prediction_type == "stage" and stage_subtype in {"sprint", "reduced_sprint"}:
             removed_probability = 0.0
             eligible_receivers: list[int] = []
+            pure_sprint_receivers: list[int] = []
+
+            if stage_subtype == "sprint":
+                for idx, rider in enumerate(riders):
+                    sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                    gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                    climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+                    season_pct = float(rider.get("field_pct_season_form", 0.5) or 0.5)
+                    recent_pct = float(rider.get("field_pct_recent_form", 0.5) or 0.5)
+                    reliable_poor_form = float(rider.get("reliable_poor_form", 0.0) or 0.0)
+                    poor_form_signal = min(
+                        1.0,
+                        reliable_poor_form
+                        + max(0.0, 0.36 - season_pct)
+                        + max(0.0, 0.34 - recent_pct),
+                    )
+
+                    if sprint_raw >= 0.40 and gc_raw < 0.45 and climb_raw < 0.45 and poor_form_signal < 0.65:
+                        pure_sprint_receivers.append(idx)
+
+            pure_sprint_receiver_set = set(pure_sprint_receivers)
 
             for idx, rider in enumerate(riders):
                 sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
@@ -2830,6 +2851,22 @@ class VelopredPredictor:
                     severity = min(1.0, ((gc_role - 0.64) / 0.30) + max(0.0, 0.45 - sprint_raw))
                     win_cap = max(0.0035, 0.018 - severity * 0.013)
                 elif (
+                    stage_subtype == "sprint"
+                    and race_days_value >= 5
+                    and pure_sprint_receivers
+                    and gc_role < 0.64
+                    and sprint_raw < 0.36
+                    and (one_day_raw >= 0.45 or hills_raw >= 0.38 or sprint_profile_fit >= 0.62)
+                ):
+                    # In pure bunch sprints, classics engines can remain top-10 threats,
+                    # but win odds should sit below true sprinter profiles.
+                    profile_allowance = min(
+                        0.003,
+                        max(0.0, hills_raw - 0.38) * 0.006
+                        + max(0.0, one_day_raw - 0.45) * 0.004,
+                    )
+                    win_cap = max(0.014, 0.014 + sprint_raw * 0.030 + profile_allowance)
+                elif (
                     stage_subtype == "reduced_sprint"
                     and race_days_value >= 5
                     and gc_role >= 0.68
@@ -2841,7 +2878,10 @@ class VelopredPredictor:
                     win_cap = max(0.014, 0.055 - severity * 0.035)
 
                 if win_cap is None:
-                    if sprint_finish_fit >= 0.48 or punch_finish_fit >= 0.62 or sprint_raw >= 0.38:
+                    if stage_subtype == "sprint":
+                        if idx in pure_sprint_receiver_set:
+                            eligible_receivers.append(idx)
+                    elif sprint_finish_fit >= 0.48 or punch_finish_fit >= 0.62 or sprint_raw >= 0.38:
                         eligible_receivers.append(idx)
                     continue
 
@@ -2851,23 +2891,102 @@ class VelopredPredictor:
                     win_probs[idx] = win_cap
 
             if removed_probability > 0.0 and eligible_receivers:
-                receiver_weights = np.array(
-                    [
-                        max(
-                            0.0001,
+                receiver_weight_values = []
+                for i in eligible_receivers:
+                    rider = riders[i]
+                    sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                    sprint_profile_fit = float(rider.get("sprint_profile_score", 25.0) or 25.0) / 100.0
+                    season_pct = float(rider.get("field_pct_season_form", 0.5) or 0.5)
+                    recent_pct = float(rider.get("field_pct_recent_form", 0.5) or 0.5)
+                    reliable_poor_form = float(rider.get("reliable_poor_form", 0.0) or 0.0)
+                    poor_form_signal = min(
+                        1.0,
+                        reliable_poor_form
+                        + max(0.0, 0.36 - season_pct)
+                        + max(0.0, 0.34 - recent_pct),
+                    )
+
+                    if stage_subtype == "sprint":
+                        weight = (
+                            float(win_probs[i])
+                            + sprint_raw * 0.018
+                            + sprint_profile_fit * 0.006
+                            + season_pct * 0.004
+                            - poor_form_signal * 0.012
+                        )
+                    else:
+                        weight = (
                             float(win_probs[i])
                             + max(0.0, float(speciality_sprint_pct[i])) * 0.004
-                            + max(0.0, float(speciality_hills_pct[i])) * (0.002 if stage_subtype == "reduced_sprint" else 0.0),
+                            + max(0.0, float(speciality_hills_pct[i])) * 0.002
                         )
-                        for i in eligible_receivers
-                    ],
-                    dtype=float,
-                )
+
+                    receiver_weight_values.append(max(0.0001, weight))
+
+                receiver_weights = np.array(receiver_weight_values, dtype=float)
                 receiver_weights = receiver_weights / max(1e-9, float(receiver_weights.sum()))
                 for offset, idx in enumerate(eligible_receivers):
                     win_probs[idx] += removed_probability * float(receiver_weights[offset])
 
+                if stage_subtype == "sprint":
+                    for idx in eligible_receivers:
+                        rider = riders[idx]
+                        sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                        sprint_profile_fit = float(rider.get("sprint_profile_score", 25.0) or 25.0) / 100.0
+                        season_pct = float(rider.get("field_pct_season_form", 0.5) or 0.5)
+                        recent_pct = float(rider.get("field_pct_recent_form", 0.5) or 0.5)
+                        reliable_poor_form = float(rider.get("reliable_poor_form", 0.0) or 0.0)
+                        poor_form_signal = min(
+                            1.0,
+                            reliable_poor_form
+                            + max(0.0, 0.36 - season_pct)
+                            + max(0.0, 0.34 - recent_pct),
+                        )
+                        specialist_floor = min(
+                            0.080,
+                            max(
+                                0.018,
+                                0.0235
+                                + max(0.0, sprint_raw - 0.40) * 0.070
+                                + max(0.0, sprint_profile_fit - 0.68) * 0.012
+                                - poor_form_signal * 0.016,
+                            ),
+                        )
+                        win_probs[idx] = max(float(win_probs[idx]), specialist_floor)
+
                 win_probs = win_probs / max(1e-9, float(win_probs.sum()))
+
+            if stage_subtype == "sprint" and pure_sprint_receivers:
+                floor_changed = False
+                for idx in pure_sprint_receivers:
+                    rider = riders[idx]
+                    sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                    sprint_profile_fit = float(rider.get("sprint_profile_score", 25.0) or 25.0) / 100.0
+                    season_pct = float(rider.get("field_pct_season_form", 0.5) or 0.5)
+                    recent_pct = float(rider.get("field_pct_recent_form", 0.5) or 0.5)
+                    reliable_poor_form = float(rider.get("reliable_poor_form", 0.0) or 0.0)
+                    poor_form_signal = min(
+                        1.0,
+                        reliable_poor_form
+                        + max(0.0, 0.36 - season_pct)
+                        + max(0.0, 0.34 - recent_pct),
+                    )
+                    specialist_floor = min(
+                        0.080,
+                        max(
+                            0.018,
+                            0.0235
+                            + max(0.0, sprint_raw - 0.40) * 0.070
+                            + max(0.0, sprint_profile_fit - 0.68) * 0.012
+                            - poor_form_signal * 0.016,
+                        ),
+                    )
+                    if float(win_probs[idx]) + 0.0001 < specialist_floor:
+                        win_probs[idx] = specialist_floor
+                        floor_changed = True
+
+                if floor_changed:
+                    win_probs = win_probs / max(1e-9, float(win_probs.sum()))
 
         # Final ranking should follow the calibrated win probabilities, not the
         # earlier raw score order. This is especially important after captain/team
