@@ -29,7 +29,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold
 
-MODEL_VERSION = "v47"
+MODEL_VERSION = "v48"
 
 # Vervalstrategie: huidig jaar telt 3x, vorig jaar 1x, ouder snel dalend
 # year_weight(2026, 2026) = 3.0
@@ -2805,6 +2805,69 @@ class VelopredPredictor:
         recalibrated_win_probs = np.zeros_like(win_probs)
         recalibrated_win_probs[order] = ordered_win_probs
         win_probs = recalibrated_win_probs
+
+        if prediction_type == "stage" and stage_subtype in {"sprint", "reduced_sprint"}:
+            removed_probability = 0.0
+            eligible_receivers: list[int] = []
+
+            for idx, rider in enumerate(riders):
+                sprint_raw = float(rider.get("pcs_speciality_sprint", 0) or 0) / 10000.0
+                gc_raw = float(rider.get("pcs_speciality_gc", 0) or 0) / 10000.0
+                climb_raw = float(rider.get("pcs_speciality_climber", 0) or 0) / 10000.0
+                hills_raw = float(rider.get("pcs_speciality_hills", 0) or 0) / 10000.0
+                one_day_raw = float(rider.get("pcs_speciality_one_day", 0) or 0) / 10000.0
+                sprint_profile_fit = float(rider.get("sprint_profile_score", 25.0) or 25.0) / 100.0
+                punch_profile_fit = float(rider.get("punch_profile_score", 25.0) or 25.0) / 100.0
+                stage_profile_fit, _stage_profile_exp = self._stage_profile_fit_for_rider(rider, stage_subtype)
+
+                gc_role = float(np.clip(gc_raw * 0.56 + climb_raw * 0.34 + career_points_pct[idx] * 0.10, 0.0, 1.0))
+                sprint_finish_fit = max(sprint_raw, sprint_profile_fit * 0.78)
+                punch_finish_fit = max(hills_raw * 0.82 + one_day_raw * 0.18, punch_profile_fit, stage_profile_fit)
+                win_cap = None
+
+                if stage_subtype == "sprint" and race_days_value >= 5 and gc_role >= 0.64 and sprint_raw < 0.45:
+                    # GC leaders normally sit out bunch sprints; keep them out of top-stage odds.
+                    severity = min(1.0, ((gc_role - 0.64) / 0.30) + max(0.0, 0.45 - sprint_raw))
+                    win_cap = max(0.0035, 0.018 - severity * 0.013)
+                elif (
+                    stage_subtype == "reduced_sprint"
+                    and race_days_value >= 5
+                    and gc_role >= 0.68
+                    and sprint_raw < 0.42
+                    and punch_finish_fit < 0.64
+                ):
+                    # A reduced sprint can suit GC riders only with enough punch/hills finish fit.
+                    severity = min(1.0, ((gc_role - 0.68) / 0.26) + max(0.0, 0.64 - punch_finish_fit))
+                    win_cap = max(0.014, 0.055 - severity * 0.035)
+
+                if win_cap is None:
+                    if sprint_finish_fit >= 0.48 or punch_finish_fit >= 0.62 or sprint_raw >= 0.38:
+                        eligible_receivers.append(idx)
+                    continue
+
+                current_prob = float(win_probs[idx])
+                if current_prob > win_cap:
+                    removed_probability += current_prob - win_cap
+                    win_probs[idx] = win_cap
+
+            if removed_probability > 0.0 and eligible_receivers:
+                receiver_weights = np.array(
+                    [
+                        max(
+                            0.0001,
+                            float(win_probs[i])
+                            + max(0.0, float(speciality_sprint_pct[i])) * 0.004
+                            + max(0.0, float(speciality_hills_pct[i])) * (0.002 if stage_subtype == "reduced_sprint" else 0.0),
+                        )
+                        for i in eligible_receivers
+                    ],
+                    dtype=float,
+                )
+                receiver_weights = receiver_weights / max(1e-9, float(receiver_weights.sum()))
+                for offset, idx in enumerate(eligible_receivers):
+                    win_probs[idx] += removed_probability * float(receiver_weights[offset])
+
+                win_probs = win_probs / max(1e-9, float(win_probs.sum()))
 
         # Final ranking should follow the calibrated win probabilities, not the
         # earlier raw score order. This is especially important after captain/team

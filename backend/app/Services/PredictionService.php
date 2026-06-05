@@ -192,6 +192,12 @@ class PredictionService
                 $context,
                 $featuresBySlug,
             );
+            $predictions = $this->applySprintStageRoleFeasibilityAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
+            );
             $predictions = $this->applyTeamTimeTrialGroupingAdjustments(
                 $predictions,
                 $race,
@@ -216,6 +222,12 @@ class PredictionService
                 $slugToId,
                 $featuresBySlug,
                 $context['prediction_type'],
+            );
+            $predictions = $this->applySprintStageRoleFeasibilityAdjustments(
+                $predictions,
+                $race,
+                $context,
+                $featuresBySlug,
             );
             $predictions = $this->applyTeamTimeTrialGroupingAdjustments(
                 $predictions,
@@ -544,6 +556,128 @@ class PredictionService
             $bConfidence = (float) ($b['confidence_score'] ?? 0.0);
             if ($aConfidence !== $bConfidence) {
                 return $bConfidence <=> $aConfidence;
+            }
+
+            return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
+        });
+
+        foreach ($predictions as $index => $prediction) {
+            $predictions[$index]['predicted_position'] = $index + 1;
+        }
+
+        return $predictions;
+    }
+
+    private function applySprintStageRoleFeasibilityAdjustments(
+        array $predictions,
+        Race $race,
+        array $context,
+        array $featuresBySlug,
+    ): array {
+        if (($context['prediction_type'] ?? '') !== 'stage' || !$race->isStageRace() || count($predictions) < 2) {
+            return $predictions;
+        }
+
+        $stageSubtype = (string) ($context['stage_subtype'] ?? '');
+        if (!in_array($stageSubtype, ['sprint', 'reduced_sprint'], true)) {
+            return $predictions;
+        }
+
+        $raceDays = max(1, $race->start_date->diffInDays($race->end_date) + 1);
+        if ($raceDays < 5) {
+            return $predictions;
+        }
+
+        $updated = false;
+        foreach ($predictions as $index => $prediction) {
+            $slug = (string) ($prediction['rider_slug'] ?? '');
+            $features = $slug !== '' ? ($featuresBySlug[$slug] ?? ($prediction['features'] ?? null)) : null;
+            if (!is_array($features)) {
+                continue;
+            }
+
+            $sprint = min(1.0, max(0.0, (float) ($features['pcs_speciality_sprint'] ?? 0.0) / 10000.0));
+            $gc = min(1.0, max(0.0, (float) ($features['pcs_speciality_gc'] ?? 0.0) / 10000.0));
+            $climb = min(1.0, max(0.0, (float) ($features['pcs_speciality_climber'] ?? 0.0) / 10000.0));
+            $hills = min(1.0, max(0.0, (float) ($features['pcs_speciality_hills'] ?? 0.0) / 10000.0));
+            $oneDay = min(1.0, max(0.0, (float) ($features['pcs_speciality_one_day'] ?? 0.0) / 10000.0));
+            $sprintProfile = min(1.0, max(0.0, (float) ($features['sprint_profile_score'] ?? 25.0) / 100.0));
+            $punchProfile = min(1.0, max(0.0, (float) ($features['punch_profile_score'] ?? 25.0) / 100.0));
+            $stageFit = $this->stageProfileFitScore($features);
+            $gcRole = ($gc * 0.56) + ($climb * 0.34) + (min(1.0, max(0.0, (float) ($features['field_pct_career_points'] ?? 0.5))) * 0.10);
+            $sprintFinishFit = max($sprint, $sprintProfile * 0.78);
+            $punchFinishFit = max($hills * 0.82 + $oneDay * 0.18, $punchProfile, $stageFit);
+
+            $winCap = null;
+            $top10Cap = null;
+            $reason = null;
+
+            if (
+                $stageSubtype === 'sprint'
+                && $gcRole >= 0.64
+                && $sprint < 0.45
+            ) {
+                // GC-kopmannen sparen zich in massasprints; ze mogen niet als sprinter top-3 eindigen.
+                $severity = min(1.0, (($gcRole - 0.64) / 0.30) + max(0.0, 0.45 - $sprint));
+                $winCap = max(0.0035, 0.018 - ($severity * 0.013));
+                $top10Cap = max(0.12, 0.32 - ($severity * 0.18));
+                $reason = 'pure_sprint_gc_conservation';
+            } elseif (
+                $stageSubtype === 'reduced_sprint'
+                && $gcRole >= 0.68
+                && $sprint < 0.42
+                && $punchFinishFit < 0.64
+            ) {
+                // Reduced sprint is alleen GC-vriendelijk bij duidelijke heuvel/punch-fit.
+                $severity = min(1.0, (($gcRole - 0.68) / 0.26) + max(0.0, 0.64 - $punchFinishFit));
+                $winCap = max(0.014, 0.055 - ($severity * 0.035));
+                $top10Cap = max(0.30, 0.62 - ($severity * 0.22));
+                $reason = 'reduced_sprint_gc_conservation';
+            }
+
+            if ($winCap === null || $top10Cap === null || $reason === null) {
+                continue;
+            }
+
+            $currentWin = (float) ($prediction['win_probability'] ?? 0.0);
+            $currentTop10 = (float) ($prediction['top10_probability'] ?? 0.0);
+            $newWin = min($currentWin, $winCap);
+            $newTop10 = min($currentTop10, $top10Cap);
+
+            if (abs($newWin - $currentWin) <= 0.0001 && abs($newTop10 - $currentTop10) <= 0.0001) {
+                continue;
+            }
+
+            $featurePatch = array_merge($features, [
+                'sprint_stage_role_cap' => $reason,
+                'sprint_stage_role_gc_score' => round($gcRole, 4),
+                'sprint_stage_role_sprint_fit' => round($sprintFinishFit, 4),
+                'sprint_stage_role_punch_fit' => round($punchFinishFit, 4),
+                'sprint_stage_role_win_cap' => round($winCap, 4),
+                'sprint_stage_role_top10_cap' => round($top10Cap, 4),
+            ]);
+
+            $predictions[$index]['win_probability'] = max(0.0, $newWin);
+            $predictions[$index]['top10_probability'] = max(0.0, $newTop10);
+            $predictions[$index]['features'] = $featurePatch;
+            $updated = true;
+        }
+
+        if (!$updated) {
+            return $predictions;
+        }
+
+        usort($predictions, function (array $a, array $b) {
+            $aWin = (float) ($a['win_probability'] ?? 0.0);
+            $bWin = (float) ($b['win_probability'] ?? 0.0);
+            if ($aWin !== $bWin) {
+                return $bWin <=> $aWin;
+            }
+
+            $aTop10 = (float) ($a['top10_probability'] ?? 0.0);
+            $bTop10 = (float) ($b['top10_probability'] ?? 0.0);
+            if ($aTop10 !== $bTop10) {
+                return $bTop10 <=> $aTop10;
             }
 
             return ((int) ($a['predicted_position'] ?? 999)) <=> ((int) ($b['predicted_position'] ?? 999));
