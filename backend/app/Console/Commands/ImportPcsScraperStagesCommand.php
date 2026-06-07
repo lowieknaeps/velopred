@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\Race;
 use App\Models\RaceResult;
 use App\Models\Rider;
+use App\Services\PostResultSyncService;
 use Illuminate\Console\Command;
 
 class ImportPcsScraperStagesCommand extends Command
@@ -97,6 +98,9 @@ class ImportPcsScraperStagesCommand extends Command
                 if (!is_array($timeRows)) {
                     continue;
                 }
+                if (empty($timeRows)) {
+                    continue;
+                }
 
                 $resultType = $race->isOneDay() ? 'result' : 'stage';
                 $storedStageNumber = $race->isOneDay() ? null : $stageNumber;
@@ -108,8 +112,8 @@ class ImportPcsScraperStagesCommand extends Command
                     ->where('status', 'finished')
                     ->count();
 
-                if ($existingRows > count($timeRows)) {
-                    $this->warn("Bestaande volledige uitslag behouden: {$race->pcs_slug} stage {$stageNumber} ({$existingRows} > " . count($timeRows) . ")");
+                if ($existingRows >= count($timeRows)) {
+                    $this->warn("Bestaande uitslag behouden: {$race->pcs_slug} stage {$stageNumber} ({$existingRows} >= " . count($timeRows) . ")");
                     continue;
                 }
 
@@ -169,6 +173,12 @@ class ImportPcsScraperStagesCommand extends Command
             Race::query()
                 ->whereIn('id', array_keys($touchedRaceIds))
                 ->update(['synced_at' => now()]);
+
+            $postSync = app(PostResultSyncService::class);
+            Race::query()
+                ->whereIn('id', array_keys($touchedRaceIds))
+                ->get()
+                ->each(fn (Race $race) => $postSync->handle($race, false));
         }
 
         $this->info("Import klaar. races={$processedRaces}, stage_rows={$importedRows}");

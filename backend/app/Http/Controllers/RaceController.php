@@ -931,18 +931,21 @@ class RaceController extends Controller
             return ['prediction_type' => 'result', 'stage_number' => 0];
         }
 
-        // Stage races:
-        // While the race is ongoing, users expect the default view to be the latest available stage.
-        // Once finished, default back to GC if available.
+        // Stage races: keep GC as the primary view when model output exists.
+        // Finished/live stages stay visible in the grouped stage cards.
+        $hasGcPrediction = $race->predictions()
+            ->where('prediction_type', 'gc')
+            ->where('stage_number', 0)
+            ->exists();
+        if ($hasGcPrediction) {
+            return ['prediction_type' => 'gc', 'stage_number' => 0];
+        }
+
         $latestStage = $race->results()
             ->where('result_type', 'stage')
             ->whereNotNull('position')
             ->where('status', 'finished')
             ->max('stage_number');
-
-        if ($latestStage && $race->isLive()) {
-            return ['prediction_type' => 'stage', 'stage_number' => (int) $latestStage];
-        }
 
         $hasGc = $race->results()
             ->where('result_type', 'gc')

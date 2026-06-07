@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Race;
 use App\Services\ExternalCyclingApiService;
+use App\Services\PostResultSyncService;
 use App\Services\RaceSyncService;
 use App\Services\RiderSyncService;
 use Illuminate\Console\Command;
@@ -41,7 +42,11 @@ class SyncStageCommand extends Command
         foreach (array_values(array_unique($candidates)) as $candidate) {
             try {
                 $service->syncSingleStageResult($race, (int) $candidate, $displayStage);
+                $postSync = app(PostResultSyncService::class)->handle($race->fresh(), false);
                 $this->info("✅ Etappe opgeslagen (PCS stage {$candidate})");
+                if (($postSync['evaluated_contexts'] ?? 0) > 0) {
+                    $this->line("📊 Evaluatiecontexten bijgewerkt: {$postSync['evaluated_contexts']}");
+                }
                 return self::SUCCESS;
             } catch (\Throwable $e) {
                 $lastError = $e;

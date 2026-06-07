@@ -24,6 +24,7 @@ class PostResultSyncService
         // Persist training examples whenever we have both predictions and results for a context.
         // This is useful for both one-day races and stage races.
         $savedExamples = $this->trainingDataset->persistAllAvailableContexts($race);
+        $evaluatedContexts = $this->evaluateAvailableResultContexts($race);
 
         // Stage races: learn after each newly available stage result so next stages improve.
         $stageLearning = $this->runStageRaceLearningLoop($race, $savedExamples);
@@ -38,13 +39,14 @@ class PostResultSyncService
         if (!$race->isOneDay() || !$hasFinalResults) {
             return [
                 'evaluated' => false,
+                'evaluated_contexts' => count($evaluatedContexts),
                 'refreshed_upcoming_predictions' => 0,
                 'saved_training_examples' => $savedExamples,
                 'stage_learning' => $stageLearning,
             ];
         }
 
-        $evaluation = $this->evaluationService->evaluateRace($race, 'result', 0);
+        $evaluation = $evaluatedContexts['result:0'] ?? $this->evaluationService->evaluateRace($race, 'result', 0);
         $refreshed = 0;
 
         if ($refreshUpcomingPredictions && $evaluation !== null) {
@@ -57,10 +59,37 @@ class PostResultSyncService
 
         return [
             'evaluated' => $evaluation !== null,
+            'evaluated_contexts' => count($evaluatedContexts),
             'refreshed_upcoming_predictions' => $refreshed,
             'saved_training_examples' => $savedExamples,
             'stage_learning' => $stageLearning,
         ];
+    }
+
+    private function evaluateAvailableResultContexts(Race $race): array
+    {
+        $contexts = $race->results()
+            ->select('result_type', 'stage_number')
+            ->whereNotNull('position')
+            ->where('status', 'finished')
+            ->distinct()
+            ->get();
+
+        $evaluations = [];
+        foreach ($contexts as $context) {
+            $type = (string) $context->result_type;
+            if ($type === '') {
+                continue;
+            }
+
+            $stageNumber = (int) ($context->stage_number ?? 0);
+            $evaluation = $this->evaluationService->evaluateRace($race, $type, $stageNumber);
+            if ($evaluation !== null) {
+                $evaluations["{$type}:{$stageNumber}"] = $evaluation;
+            }
+        }
+
+        return $evaluations;
     }
 
     private function runStageRaceLearningLoop(Race $race, int $savedExamples): array
