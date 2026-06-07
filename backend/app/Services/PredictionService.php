@@ -452,6 +452,53 @@ class PredictionService
             }
             $this->upsertClassificationFromScores($race, 'kom', $komScores);
         }
+
+        $this->refreshStageRaceYouthClassificationFromGc($race);
+    }
+
+    private function refreshStageRaceYouthClassificationFromGc(Race $race): void
+    {
+        $gcPredictions = Prediction::query()
+            ->where('race_id', $race->id)
+            ->where('prediction_type', 'gc')
+            ->where('stage_number', 0)
+            ->with('rider:id,date_of_birth,age_approx')
+            ->get(['id', 'rider_id', 'predicted_position', 'win_probability', 'top10_probability']);
+
+        if ($gcPredictions->isEmpty()) {
+            return;
+        }
+
+        $scores = [];
+        foreach ($gcPredictions as $prediction) {
+            $rider = $prediction->rider;
+            if (!$rider) {
+                continue;
+            }
+
+            $ageAtRaceStart = null;
+            if ($rider->date_of_birth) {
+                $ageAtRaceStart = $rider->date_of_birth->diffInYears($race->start_date);
+            } elseif ($rider->age_approx !== null) {
+                $ageAtRaceStart = (int) $rider->age_approx;
+            }
+
+            if ($ageAtRaceStart !== null && $ageAtRaceStart >= 26) {
+                continue;
+            }
+
+            $position = max(1, (int) ($prediction->predicted_position ?? 999));
+            $win = (float) ($prediction->win_probability ?? 0.0);
+            $top10 = (float) ($prediction->top10_probability ?? 0.0);
+
+            $scores[(int) $prediction->rider_id] = (1000.0 / ($position + 4.0))
+                + ($win * 220.0)
+                + ($top10 * 45.0);
+        }
+
+        if (!empty($scores)) {
+            $this->upsertClassificationFromScores($race, 'youth', $scores);
+        }
     }
 
     private function upsertClassificationFromScores(Race $race, string $type, array $scoresByRiderId): void
@@ -469,8 +516,9 @@ class PredictionService
         $max = max($scores);
         $exp = array_map(fn ($s) => exp(($s - $max) / 18.0), $scores);
         $sum = array_sum($exp) ?: 1.0;
+        $modelVersion = $this->latestRacePredictionModelVersion($race);
 
-        DB::transaction(function () use ($race, $type, $riderIds, $exp, $sum, $n) {
+        DB::transaction(function () use ($race, $type, $riderIds, $exp, $sum, $n, $modelVersion) {
             foreach ($riderIds as $i => $riderId) {
                 $winProb = (float) ($exp[$i] / $sum);
                 $top10Prob = (float) max(0.02, min(0.95, exp(-$i * 0.12) * 0.85));
@@ -483,7 +531,7 @@ class PredictionService
                         'stage_number' => 0,
                     ],
                     [
-                        'model_version' => (string) (Prediction::where('race_id', $race->id)->value('model_version') ?? 'v1'),
+                        'model_version' => $modelVersion,
                         'predicted_position' => $i + 1,
                         'top10_probability' => $top10Prob,
                         'raw_top10_probability' => $top10Prob,
@@ -498,7 +546,41 @@ class PredictionService
                 );
                 $record->touch();
             }
+
+            Prediction::query()
+                ->where('race_id', $race->id)
+                ->where('prediction_type', $type)
+                ->where('stage_number', 0)
+                ->whereNotIn('rider_id', array_map('intval', $riderIds))
+                ->delete();
         });
+    }
+
+    private function latestRacePredictionModelVersion(Race $race): string
+    {
+        $versions = Prediction::query()
+            ->where('race_id', $race->id)
+            ->whereNotNull('model_version')
+            ->pluck('model_version');
+
+        $bestVersion = null;
+        $bestNumber = -1;
+
+        foreach ($versions as $version) {
+            $version = (string) $version;
+            if (preg_match('/^v(\d+)$/', $version, $matches)) {
+                $number = (int) $matches[1];
+                if ($number > $bestNumber) {
+                    $bestNumber = $number;
+                    $bestVersion = $version;
+                }
+                continue;
+            }
+
+            $bestVersion ??= $version;
+        }
+
+        return $bestVersion ?: 'v1';
     }
 
     private function applyProbabilityCalibration(

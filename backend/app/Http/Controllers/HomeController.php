@@ -7,6 +7,7 @@ use App\Models\PredictionEvaluation;
 use App\Models\Race;
 use App\Services\PredictionService;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -18,6 +19,15 @@ class HomeController extends Controller
 
     public function index(): Response
     {
+        if (!$this->dashboardSchemaReady()) {
+            return Inertia::render('Dashboard', [
+                'liveBoard' => null,
+                'evaluationSummary' => null,
+                'featuredRaces' => [],
+                'featuredRiders' => [],
+            ]);
+        }
+
         $year = (int) date('Y');
         $payload = Cache::remember("home:dashboard:{$year}", now()->addSeconds(60), function () {
             $liveBoard = $this->buildLiveBoard();
@@ -31,6 +41,14 @@ class HomeController extends Controller
         });
 
         return Inertia::render('Dashboard', $payload);
+    }
+
+    private function dashboardSchemaReady(): bool
+    {
+        return Schema::hasTable('races')
+            && Schema::hasTable('race_entries')
+            && Schema::hasTable('predictions')
+            && Schema::hasTable('prediction_evaluations');
     }
 
     private function buildFeaturedRaces(): array

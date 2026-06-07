@@ -19,13 +19,15 @@ return new class extends Migration
             }
         });
 
-        // Replace old unique(race_id, rider_id) with the new key.
-        // Name is short to satisfy MySQL identifier length limits.
-        $indexes = collect(DB::select("SHOW INDEX FROM predictions"))->pluck('Key_name')->unique()->all();
-        if (in_array('predictions_race_id_rider_id_unique', $indexes, true)) {
-            Schema::table('predictions', function (Blueprint $table) {
-                $table->dropUnique('predictions_race_id_rider_id_unique');
-            });
+        if (DB::getDriverName() === 'mysql') {
+            // Replace old unique(race_id, rider_id) with the new key.
+            // Name is short to satisfy MySQL identifier length limits.
+            $indexes = collect(DB::select("SHOW INDEX FROM predictions"))->pluck('Key_name')->unique()->all();
+            if (in_array('predictions_race_id_rider_id_unique', $indexes, true)) {
+                Schema::table('predictions', function (Blueprint $table) {
+                    $table->dropUnique('predictions_race_id_rider_id_unique');
+                });
+            }
         }
 
         Schema::table('predictions', function (Blueprint $table) {
@@ -35,12 +37,14 @@ return new class extends Migration
 
     public function down(): void
     {
-        // Best-effort rollback.
-        $indexes = collect(DB::select("SHOW INDEX FROM predictions"))->pluck('Key_name')->unique()->all();
-        if (in_array('pred_race_rider_type_stage_uq', $indexes, true)) {
-            Schema::table('predictions', function (Blueprint $table) {
-                $table->dropUnique('pred_race_rider_type_stage_uq');
-            });
+        if (DB::getDriverName() === 'mysql') {
+            // Best-effort rollback.
+            $indexes = collect(DB::select("SHOW INDEX FROM predictions"))->pluck('Key_name')->unique()->all();
+            if (in_array('pred_race_rider_type_stage_uq', $indexes, true)) {
+                Schema::table('predictions', function (Blueprint $table) {
+                    $table->dropUnique('pred_race_rider_type_stage_uq');
+                });
+            }
         }
 
         Schema::table('predictions', function (Blueprint $table) {
