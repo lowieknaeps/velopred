@@ -194,7 +194,7 @@ class RaceController extends Controller
         } elseif ($primaryPredictions->isNotEmpty()) {
             $contenders = $primaryPredictions->take(3)->map(fn($p, $i) => [
                 'name'       => $p->rider->full_name,
-                'role'       => match($i) { 0 => 'Topfavoriet', 1 => 'Kanshebber', default => 'Donkere outsider' },
+                'role'       => match($i) { 0 => 'Topfavoriet', 1 => 'Kanshebber', default => 'Outsider' },
                 'note'       => round($p->win_probability * 100, 1) . '% winkans',
                 'confidence' => round($p->top10_probability * 100, 0) . '% top-10',
             ])->values()->toArray();
