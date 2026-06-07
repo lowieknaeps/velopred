@@ -9,6 +9,14 @@ use Illuminate\Console\Command;
 
 class ImportPcsScraperStagesCommand extends Command
 {
+    private const RACE_SLUG_ALIASES = [
+        // PCS keeps the public route under /race/dauphine, while the 2026 scraper
+        // exports the rebranded race name as Tour Auvergne - Rhone-Alpes.
+        'tour-auvergne-rhone-alpes' => 'dauphine',
+        'tour-auvergne-rhône-alpes' => 'dauphine',
+        'criterium-du-dauphine' => 'dauphine',
+    ];
+
     protected $signature = 'import:pcs-stages
         {season : Season year (bv. 2026)}
         {--file=C:\\Users\\lowie\\pcs-scraper\\output\\races.json : Pad naar races.json}
@@ -41,6 +49,7 @@ class ImportPcsScraperStagesCommand extends Command
 
         $processedRaces = 0;
         $importedRows = 0;
+        $touchedRaceIds = [];
 
         foreach ($rows as $row) {
             $raceId = (string) ($row['id'] ?? '');
@@ -57,13 +66,16 @@ class ImportPcsScraperStagesCommand extends Command
                 continue;
             }
 
-            if ($only !== null && $pcsSlug !== $only) {
+            $dbSlug = $this->normalizeRaceSlug($pcsSlug);
+
+            if ($only !== null && !in_array($only, [$pcsSlug, $dbSlug], true)) {
                 continue;
             }
 
-            $race = Race::query()->where('pcs_slug', $pcsSlug)->where('year', $season)->first();
+            $race = Race::query()->where('pcs_slug', $dbSlug)->where('year', $season)->first();
             if (!$race) {
-                $this->warn("Race niet gevonden in DB: {$pcsSlug} {$season}");
+                $suffix = $dbSlug !== $pcsSlug ? " (alias: {$dbSlug})" : '';
+                $this->warn("Race niet gevonden in DB: {$pcsSlug} {$season}{$suffix}");
                 continue;
             }
 
@@ -83,6 +95,21 @@ class ImportPcsScraperStagesCommand extends Command
                 $stageNumber = (int) $matches[1];
                 $timeRows = $stage['stageResults']['time'] ?? [];
                 if (!is_array($timeRows)) {
+                    continue;
+                }
+
+                $resultType = $race->isOneDay() ? 'result' : 'stage';
+                $storedStageNumber = $race->isOneDay() ? null : $stageNumber;
+                $existingRows = RaceResult::query()
+                    ->where('race_id', $race->id)
+                    ->where('result_type', $resultType)
+                    ->where('stage_number', $storedStageNumber)
+                    ->whereNotNull('position')
+                    ->where('status', 'finished')
+                    ->count();
+
+                if ($existingRows > count($timeRows)) {
+                    $this->warn("Bestaande volledige uitslag behouden: {$race->pcs_slug} stage {$stageNumber} ({$existingRows} > " . count($timeRows) . ")");
                     continue;
                 }
 
@@ -113,9 +140,6 @@ class ImportPcsScraperStagesCommand extends Command
                         continue;
                     }
 
-                    $resultType = $race->isOneDay() ? 'result' : 'stage';
-                    $storedStageNumber = $race->isOneDay() ? null : $stageNumber;
-
                     RaceResult::query()->updateOrCreate(
                         [
                             'race_id' => $race->id,
@@ -136,11 +160,23 @@ class ImportPcsScraperStagesCommand extends Command
                     );
 
                     $importedRows++;
+                    $touchedRaceIds[$race->id] = true;
                 }
             }
         }
 
+        if (!empty($touchedRaceIds)) {
+            Race::query()
+                ->whereIn('id', array_keys($touchedRaceIds))
+                ->update(['synced_at' => now()]);
+        }
+
         $this->info("Import klaar. races={$processedRaces}, stage_rows={$importedRows}");
         return self::SUCCESS;
+    }
+
+    private function normalizeRaceSlug(string $slug): string
+    {
+        return self::RACE_SLUG_ALIASES[$slug] ?? $slug;
     }
 }

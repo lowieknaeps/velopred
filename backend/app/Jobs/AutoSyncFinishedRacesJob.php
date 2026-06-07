@@ -40,6 +40,7 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
         $yesterday      = $now->copy()->subDay()->toDateString();
         $in30Days       = $now->copy()->addDays(30)->toDateString();
         $startlistStale = $now->copy()->subHour();
+        $ongoingResultStale = $now->hour >= 17 ? $now->copy()->subHour() : null;
 
         // ── 1. Afgelopen races ─────────────────────────────────────────────
         $finished = Race::whereDate('end_date', '<=', $yesterday)
@@ -69,9 +70,13 @@ class AutoSyncFinishedRacesJob implements ShouldQueue
         // We synchen als de race vandaag nog niet gesynchroniseerd is.
         $ongoing = Race::where('start_date', '<=', $today)
             ->where('end_date', '>=', $today)
-            ->where(function ($q) use ($today) {
+            ->where(function ($q) use ($today, $ongoingResultStale) {
                 $q->whereNull('synced_at')
                   ->orWhereRaw("date(synced_at) < ?", [$today]);
+
+                if ($ongoingResultStale !== null) {
+                    $q->orWhere('synced_at', '<', $ongoingResultStale);
+                }
             })
             ->get();
 

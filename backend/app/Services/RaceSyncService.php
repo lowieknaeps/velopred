@@ -110,6 +110,7 @@ class RaceSyncService
         $this->replaceResults($race, 'stage', $displayStageNumber);
         $this->saveResults($race, $data['results'], 'stage', $displayStageNumber);
         $this->upsertStageMetaFromStageEndpoint($race, $displayStageNumber, $data);
+        $race->forceFill(['synced_at' => now()])->save();
         Log::info("[RaceSync] Single stage saved: {$race->pcs_slug} {$race->year} display={$displayStageNumber} pcs={$pcsStageNumber}");
     }
 
