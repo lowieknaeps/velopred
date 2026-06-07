@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AdminController;
 use App\Http\Controllers\HomeController;
 use App\Http\Controllers\PredictionController;
 use App\Http\Controllers\ProfileController;
@@ -38,6 +39,12 @@ Route::middleware('auth')->group(function () {
     Route::post('/watchlist/{rider}/toggle', [WatchlistController::class, 'toggle'])->name('watchlist.toggle');
     Route::post('/watchlist/{rider}', [WatchlistController::class, 'store'])->name('watchlist.store');
     Route::delete('/watchlist/{rider}', [WatchlistController::class, 'destroy'])->name('watchlist.destroy');
+});
+
+Route::middleware(['auth', 'admin'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/', [AdminController::class, 'index'])->name('index');
+    Route::patch('/settings', [AdminController::class, 'updateSettings'])->name('settings.update');
+    Route::post('/cache/dashboard', [AdminController::class, 'clearDashboardCache'])->name('cache.dashboard');
 });
 
 require __DIR__.'/auth.php';

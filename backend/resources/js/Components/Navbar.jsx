@@ -1,4 +1,4 @@
-import { Link } from '@inertiajs/react';
+import { Link, usePage } from '@inertiajs/react';
 import { useState } from 'react';
 import { BrandLockup } from './Brand';
 
@@ -11,6 +11,10 @@ const navLinks = [
 
 export default function Navbar() {
     const [open, setOpen] = useState(false);
+    const { auth } = usePage().props;
+    const links = auth?.user?.is_admin
+        ? [...navLinks, { label: 'Admin', href: '/admin' }]
+        : navLinks;
 
     return (
         <header className="sticky top-0 z-30 pt-5">
@@ -20,7 +24,7 @@ export default function Navbar() {
                 </Link>
 
                 <nav className="hidden items-center gap-2 md:flex">
-                    {navLinks.map((item) => (
+                    {links.map((item) => (
                         <Link
                             key={item.href}
                             href={item.href}
@@ -49,7 +53,7 @@ export default function Navbar() {
 
             {open ? (
                 <div className="vp-panel mt-3 space-y-2 px-4 py-4 md:hidden">
-                    {navLinks.map((item) => (
+                    {links.map((item) => (
                         <Link
                             key={item.href}
                             href={item.href}
